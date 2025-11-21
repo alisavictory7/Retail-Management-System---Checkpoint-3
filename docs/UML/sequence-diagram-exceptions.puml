@@ -29,65 +29,76 @@ participant "Browser" as Browser
 participant "Flask App" as Flask
 participant "Quality Manager" as QTM
 participant "Circuit Breaker" as CB
-participant "Retry Manager" as Retry
-participant "Queue Manager" as Queue
+participant "Order Queue Manager" as Queue
+participant "Metrics Engine" as Metrics
 participant "Database" as DB
 
-Customer -> Browser: Submit invalid card
-Browser -> Flask: POST /process_payment
+Customer -> Browser: Submit checkout during flash sale
+Browser -> Flask: POST /checkout
+
+note over Flask: Throttling & authentication
+Flask -> QTM: throttle_request(user_id)
+QTM --> Flask: allowed
 
 note over Flask: Circuit Breaker Pattern
 Flask -> QTM: execute_with_circuit_breaker(payment_func)
 QTM -> CB: execute(payment_func)
 CB -> DB: query CircuitBreakerState
-DB --> CB: circuit state = "closed"
+DB --> CB: state = "CLOSED"
 CB -> CB: process_payment()
-CB --> QTM: Card Declined Error
+CB --> QTM: Payment timeout error
 QTM --> Flask: payment failed
 
-note over Flask: Retry Logic
-Flask -> QTM: execute_with_retry(payment_func, max_attempts=3)
-QTM -> Retry: execute(retry_func)
+note over Flask: Retry + MTTR tracking
+Flask -> QTM: queue_order_for_retry(order_data)
+QTM -> Queue: enqueue(order_data)
+Queue -> DB: INSERT OrderQueue (status=pending)
+DB --> Queue: queued
+Queue --> QTM: queue_id
+QTM --> Flask: order accepted for async processing
+QTM -> Metrics: increment orders_submitted_total / accepted_total
 
-loop Retry Attempts (1 to 3)
-    Retry -> Retry: process_payment()
-    Retry --> Retry: Card Declined Error
-    Retry -> DB: log retry attempt
-    DB --> Retry: attempt logged
-    
-    alt Attempt < 3
-        Retry -> Retry: wait(retry_delay)
-    else Attempt = 3
-        Retry --> QTM: all retries exhausted
-    end
-end
+note over CB
+  Failure count >= threshold?
+  - state flips to OPEN
+  - record outage_start for MTTR
+end note
 
-QTM --> Flask: retry failed after 3 attempts
+CB -> DB: UPDATE CircuitBreakerState(state="OPEN")
+CB -> Metrics: record_event(payment_circuit_opened)
 
-note over Flask: Graceful Degradation
-Flask -> QTM: queue_order_for_retry(order_data, user_id)
-QTM -> Queue: execute(order_data, user_id)
-Queue -> DB: INSERT INTO OrderQueue
-DB --> Queue: order queued
-Queue --> QTM: order queued for retry
-QTM --> Flask: order queued successfully
+Flask --> Browser: JSON {queued: true, message: "Payment retried asynchronously"}
+Browser --> Customer: Show graceful degradation banner
 
-Flask --> Browser: JSON {success: false, error: "Card declined", suggestions: ["Try different card", "Use cash"]}
-Browser --> Customer: Display error with recovery options
+== Background worker ==
+participant "Async Worker" as Worker
+Worker -> Queue: dequeue_order()
+Queue -> DB: UPDATE OrderQueue(status="processing")
+DB --> Queue: row locked
+Queue --> Worker: order payload
 
-note over Customer: Customer chooses alternative
-Customer -> Browser: Select "Try Cash Payment"
-Browser -> Flask: POST /process_payment {payment_type: "cash"}
+Worker -> QTM: execute_with_circuit_breaker(payment_retry)
+QTM -> CB: execute(payment_retry)
+CB -> DB: check next_attempt_time
+DB --> CB: allowed (HALF_OPEN)
+CB -> CB: process_payment()
+CB --> QTM: success, close breaker
+CB -> Metrics: observe_latency(payment_circuit_mttr_seconds)
+CB -> DB: UPDATE CircuitBreakerState(state="CLOSED")
 
-Flask -> QTM: execute_with_circuit_breaker(cash_payment_func)
-QTM -> CB: execute(cash_payment_func)
-CB -> CB: process_cash_payment()
-CB --> QTM: Cash payment successful
-CB -> DB: update CircuitBreakerState (reset failure_count)
-CB --> QTM: cash payment successful
-QTM --> Flask: payment processed successfully
+Worker -> DB: UPDATE OrderQueue(status="completed")
+Worker -> Metrics: observe_latency(order_processing_latency_ms)
+Worker --> Flask: notify order completed
 
 Flask --> Browser: JSON {success: true, sale_id: 124}
-Browser --> Customer: Display success message
+Browser --> Customer: Display confirmation
+
+note right of Metrics
+  Scenario dashboards consume:
+  - orders_submitted_total / accepted_total
+  - payment_circuit_mttr_seconds histogram
+  - order_processing_latency_ms (p95 ≤ 500ms)
+  - All timestamps normalized via Config.DEFAULT_TIMEZONE
+end note
 
 @enduml

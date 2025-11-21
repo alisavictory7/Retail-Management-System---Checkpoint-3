@@ -5,6 +5,15 @@
 
 Checkpoint 3 focuses on making the system deployable, observable, and reliable, while also introducing a realistic new feature: Returns & Refunds (RMA workflow).
 
+## ✅ Checkpoint 3 Focus
+
+- **Returns & Refunds (RMA):** Full customer + admin workflow with policy checks, partial approvals, evidence uploads, and refund orchestration via `ReturnsService` + `RefundService`.
+- **Containerized Deployment:** `deploy/dockercompose.yml`, production-ready `Dockerfile`, and entrypoint scripts bring up PostgreSQL, seeds, migrations, and Gunicorn with one command.
+- **Observability & SLO Evidence:** Structured logs, `/health`, `/admin/metrics`, and `/admin/dashboard` expose KPIs, Quality Scenario widgets (A.1 & P.1), and refund success telemetry required for runtime verification.
+- **Quality Automation:** Additional pytest suites (`tests/test_returns_service.py`, `tests/test_returns_api.py`, `tests/test_business_metrics.py`, etc.) cover the new domain logic plus metrics accuracy.
+- **Runbook-Driven Demo:** `docs/Runbook.md` describes the Docker → Dashboard → Returns demo script used for grading, including how to force failures for availability scenarios.
+- **Automated Load Harness:** `scripts/performance_scenario_runner.py` floods `/checkout` with configurable bursts so you can reproduce Performance Scenario P.1 on-demand (paired with `THROTTLING_MAX_RPS` in `.env`).
+
 ## 🚀 Project Description
 
 This Retail Management System is a full-stack web application designed to handle the core operations of a retail business. The system provides:
@@ -16,6 +25,7 @@ This Retail Management System is a full-stack web application designed to handle
 - **Payment Processing**: Support for both cash and card payments with circuit breaker protection
 - **Order Management**: Complete sales tracking with detailed receipts and audit logging
 - **Inventory Management**: Real-time stock updates with concurrency control and conflict resolution
+- **Returns & Refunds**: Rich RMA workflow (customer + admin) with multi-item validation and up to 20 uploaded evidence photos per request
 - **Flash Sales**: High-performance flash sale system with throttling and queuing
 - **Partner Integration**: External partner catalog ingestion with authentication and validation
 - **Quality Tactics**: 14+ enterprise-grade quality tactics implemented and tested
@@ -29,6 +39,14 @@ This Retail Management System is a full-stack web application designed to handle
 - **Quality Patterns**: Circuit breakers, graceful degradation, retry mechanisms, feature toggles
 - **Performance**: Throttling, queuing, concurrency control, and monitoring
 - **Integration**: Adapter patterns, publish-subscribe, message brokers
+
+## 🔄 Returns & Refunds Workflow (CP3)
+
+- Customers access `/returns` to submit RMAs tied to completed orders, choose reasons, quantities, and upload up to 20 evidence photos (stored under `static/uploads/returns`).
+- Admins manage `/admin/returns` to authorize, track shipments, record inspections, and trigger refunds (card, store credit, cash, or original method).
+- The workflow enforces policy windows (`RETURN_WINDOW_DAYS`), duplicate prevention, max quantity per line, photo limits, paid-sale validation, and positive-quantity checks (covered in `tests/test_returns_service.py`).
+- `RefundService` reuses the payment circuit breaker and inventory adjustments so refunds remain consistent with earlier flash-sale tactics.
+- Structured events (`refund_failed`, `returns_created`) are captured for observability and surfaced on the dashboard + metrics endpoint.
 
 ## 🎯 Quality Attributes & Tactics Implementation
 
@@ -74,6 +92,20 @@ Before setting up the project, ensure you have the following installed:
 - **Python 3.10+** ([Download here](https://www.python.org/downloads/))
 - **PostgreSQL 12+** ([Download here](https://www.postgresql.org/download/))
 - **Git** ([Download here](https://git-scm.com/downloads))
+
+## ⚡ Quick Start
+
+### Option A – Docker Compose (recommended)
+1. Duplicate the sample environment (or update your existing `.env`) with DB + secret values.
+2. Run `docker compose -f deploy/dockercompose.yml up --build`.
+3. Navigate to `http://localhost:5000`, log in as `super_admin / super_admin_92587`, and explore `/returns`, `/admin/returns`, and `/admin/dashboard`.
+4. Shut down with `docker compose -f deploy/dockercompose.yml down` (add `-v` to reset the seed data).
+
+### Option B – Local virtualenv
+1. Follow the setup steps below (venv, dependencies, `.env`, database init).
+2. Run `python run.py`.
+3. Execute `python scripts/bootstrap_super_admin.py` once to seed the admin account.
+4. Use the `docs/Runbook.md` demo script to replay both SLO scenarios locally.
 
 ## 🛠️ Setup Instructions
 
@@ -205,13 +237,17 @@ Prefer a reproducible local stack? Run everything with Docker:
 
 1. **Copy the environment template**
    ```bash
-   cp env.example .env  # or copy manually on Windows
+   # macOS/Linux
+   cp env.example .env
+
+   # Windows (Command Prompt)
+   copy env.example .env
    ```
    Update the secrets (e.g., `DB_PASSWORD`, `SECRET_KEY`) before continuing.
 
 2. **Build and start the stack**
    ```bash
-   docker compose up --build
+   docker compose -f deploy/dockercompose.yml up --build
    ```
    - `db` runs PostgreSQL 15 and automatically executes `db/init.sql`, the CP3 migration, and the returns demo seed via `/docker-entrypoint-initdb.d`.
    - `web` builds the Flask app image (Python 3.12 slim) and serves it via Gunicorn on port `5000`.
@@ -222,25 +258,41 @@ Prefer a reproducible local stack? Run everything with Docker:
 
 4. **Shut down**
    ```bash
-   docker compose down           # stop containers
-   docker compose down -v        # stop + remove the postgres volume
+   docker compose -f deploy/dockercompose.yml down           # stop containers
+   docker compose -f deploy/dockercompose.yml down -v        # stop + remove the postgres volume
    ```
 
 > **Troubleshooting tips**
-> - Use `docker compose logs -f web` to watch application logs (structured logging will be added in the observability task).
-> - If you need to reseed the database, remove the `postgres_data` volume (`docker compose down -v`) and re-run `docker compose up`.
+> - Use `docker compose -f deploy/dockercompose.yml logs -f web` to watch application logs.
+> - If you need to reseed the database, remove the `postgres_data` volume (`docker compose -f deploy/dockercompose.yml down -v`) and re-run `docker compose -f deploy/dockercompose.yml up --build`.
 
-## 📈 Observability Endpoints
+## 👥 Accounts & Roles
 
-- `GET /health` – lightweight health probe (includes DB status).
-- `GET /admin/metrics` – JSON snapshot of counters, gauges, histograms, and recent events (admin only).
-- `GET /admin/dashboard` – Tailwind dashboard summarizing KPIs (returns volume, refund success rate, HTTP latency) and recent events. Requires logging in as the admin user (ID 1).
-- To demo the availability scenario, temporarily set `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0` in `.env` so every refund triggers the circuit breaker and the dashboard counters.
+- On first startup, the system auto-seeds a super admin:
+  - Username: `super_admin`
+  - Password: `super_admin_92587` (override via `SUPER_ADMIN_PASSWORD`)
+- In Docker this bootstrap happens automatically. For local development (venv) run:
+  ```bash
+  python scripts/bootstrap_super_admin.py
+  ```
+- Visit `/admin/users` after logging in to grant or revoke admin roles for other accounts.
+- To let someone self-register as an admin, share the `SUPER_ADMIN_TOKEN` (defaults to `CP3_SUPERADMIN_TOKEN_N9fA7qLzX4`). During registration they must select “Admin” and enter the token; otherwise they’ll be created as a regular customer.
 
-The initialization script will:
-- Create all necessary tables (User, Product, Sale, Payment, SaleItem, FailedPaymentLog)
-- Insert sample data including test products and users
-- Set up proper foreign key relationships
+## 📊 Observability & Runtime Evidence
+
+- **Endpoints**
+  - `GET /health`: readiness/liveness probe (used by Docker health checks).
+  - `GET /admin/metrics`: JSON snapshot of counters, gauges, latency histograms (p95), MTTR timers, and structured events (`refund_failed`, `payment_circuit_opened`, etc.).
+  - `GET /admin/dashboard`: Tailwind dashboard that visualizes DB health, HTTP latency, refund success, RMA KPIs, and the Quality Scenario widgets for Availability A.1 + Performance P.1. Sign in as an admin to access it.
+- **Structured logs** are enabled via `src/observability/logging_config.py` and surfaced through `docker compose -f deploy/dockercompose.yml logs web`. Every request includes a correlation ID, making it easy to link dashboard widgets, metrics, and logs.
+- **SLO verification workflow**
+  1. Follow `docs/Runbook.md` to start the Docker stack and log in.
+  2. (A.1) Temporarily set `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0` in `.env`, approve the seeded `RMA-CP3-DEMO-001`, and trigger a refund. Observe the dashboard widget flip to “Fulfilled,” the MTTR histogram, and `refunds_failed_total` increment.
+     - While the failure simulation is active, manual methods (cash / store credit) are disabled so the refund must go through the card/original channel to exercise the circuit breaker.
+  3. (P.1) Lower the throttling window (e.g., `THROTTLING_MAX_RPS=2`, `THROTTLING_WINDOW_SECONDS=1`) and run `python scripts/performance_scenario_runner.py --runs 30 --delay 0.02 --product-id 2`. Confirm 429 throttling responses, the yellow UI banner, and `/admin/metrics` entries for elevated `http_requests_total` plus the sub-500 ms p95 latency.
+- **Artifacts** (captured in `docs/QUALITY_SCENARIO_VALIDATION_REPORT.md`) include structured log samples and the metrics JSON excerpt required by the rubric.
+
+The initialization scripts (Docker entrypoint or manual DB setup) create all necessary tables, insert sample data, and ensure relationships are wired before observability is exercised.
 
 ## 🚀 Running the Application
 
@@ -293,6 +345,72 @@ python tests/run_all_tests.py
 python tests/simple_test_runner.py
 ```
 
+Additional CP3-focused pytest targets:
+- `pytest tests/test_returns_service.py -v`
+- `pytest tests/test_returns_api.py -v`
+- `pytest tests/test_business_metrics.py -v`
+- `pytest tests/test_observability_metrics.py -v`
+
+### Performance Scenario Helper
+
+Toggle the `.env` knobs with the helper script instead of editing by hand:
+
+```cmd
+python scripts\apply_env_preset.py availability
+```
+
+Available presets:
+
+- `availability` – high RPS, no forced failures.
+- `availability-failure` – same throttle, but sets `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0` to trip the payment circuit breaker for MTTR evidence.
+- `performance` – low `THROTTLING_MAX_RPS` to demonstrate Manage Event Arrival / throttling.
+
+#### Prefer one-click `.cmd` launchers?
+
+```cmd
+# Availability load (applies preset, restarts web, restocks, fires burst)
+scripts\run_availability_load.cmd
+
+# Flip to forced-failure mode and follow the on-screen browser instructions
+scripts\run_availability_failure.cmd
+
+# Performance throttling demo (applies preset, restarts web, restocks, fires burst)
+scripts\run_performance_load.cmd
+```
+
+Use the automation harness to hammer `/checkout` without manually refreshing the UI:
+
+```bash
+# Lower the throttle window for demos
+echo THROTTLING_MAX_RPS=2 >> .env
+
+# From the repo root (baseline burst)
+python scripts/performance_scenario_runner.py \
+  --base-url http://localhost:5000 \
+  --username super_admin \
+  --password super_admin_92587 \
+  --product-id 2 \
+  --runs 30 \
+  --delay 0.02
+
+# Approximate the "1,000 order requests / second" stimulus
+python scripts/performance_scenario_runner.py \
+  --base-url http://localhost:5000 \
+  --username super_admin \
+  --password super_admin_92587 \
+  --product-id 2 \
+  --runs 1000 \
+  --delay 0 \
+  --concurrency 250
+```
+
+Watch `/admin/dashboard` → Availability A.1 + Performance P.1 cards and `/admin/metrics`:
+- A.1: run the high-concurrency burst, then process the seeded refund (with `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0`) to capture ≥99 % acceptance and <5 min MTTR. The widget now marks “Needs Traffic” until the counters have real data.
+- P.1: run the smaller throttling burst and confirm p95 latency stays ≤ 500 ms for accepted requests.
+
+If the script logs `HTTPConnectionPool(... read timeout=10.0)` and the dashboard still shows `0 / 0`, either lower `--concurrency` (e.g., 100) or scale Gunicorn by exporting `GUNICORN_WORKERS`, `GUNICORN_THREADS`, and `GUNICORN_TIMEOUT` before `docker compose up` (defaults are 4/4/90 in the Dockerfile). If inventory for product 2 gets low, reseed via `docker compose -f deploy/dockercompose.yml down -v` before re-running the script.
+
+
 ### Test Categories
 
 #### 1. Quality Attribute Tests
@@ -313,6 +431,7 @@ Tests complete workflows and system integration:
 - Flash sale order processing with throttling
 - Partner catalog ingestion with validation
 - Session management and persistence
+- Returns + refunds API flow (customer + admin)
 
 #### 3. Comprehensive Quality Scenarios
 Tests all 15 quality scenarios from Checkpoint2_Revised.md:
@@ -334,6 +453,8 @@ The project includes comprehensive documentation:
 - **`Checkpoint2_Revised.md`** - Checkpoint 2 requirements and specifications
 - **`Checkpoint1.md`** - Checkpoint 1 documentation and requirements
 - **`Project Deliverable 1.md`** - Project Deliverable 1 documentation
+- **`Checkpoint3.md`** - (New) Summary of CP3 tests, SLOs, and runtime evidence
+- **`docs/Runbook.md`** - Docker → Dashboard → Returns demo walkthrough
 
 ### Quality Assurance Documentation
 - **`QUALITY_SCENARIO_VALIDATION_REPORT.md`** - Detailed quality scenario validation results
@@ -359,60 +480,56 @@ python comprehensive_quality_scenarios_test.py
 
 ```
 Retail-Management-System/
-├── src/                           # Source code
-│   ├── main.py                   # Flask application and routes
-│   ├── models.py                 # Database models
-│   ├── database.py               # Database configuration
-│   ├── services/                 # Business services
-│   │   ├── flash_sale_service.py # Flash sale business logic
-│   │   └── partner_catalog_service.py # Partner catalog business logic
-│   └── tactics/                  # Quality tactics implementation
-│       ├── manager.py            # Central quality tactics manager
-│       ├── availability.py       # Availability tactics (circuit breaker, retry, etc.)
-│       ├── security.py           # Security tactics (auth, validation)
-│       ├── performance.py        # Performance tactics (throttling, queuing)
-│       ├── modifiability.py      # Modifiability tactics (adapters, toggles)
-│       ├── integrability.py      # Integrability tactics (publish-subscribe)
-│       ├── testability.py        # Testability tactics (record/playback)
-│       ├── usability.py          # Usability tactics (error handling)
-│       └── base.py               # Base classes for tactics
-├── templates/                     # HTML templates
-│   ├── index.html               # Main shopping interface
-│   ├── login.html               # Login page
-│   ├── register.html            # Registration page
-│   └── receipt.html             # Order receipt
-├── static/                       # Static assets
-│   ├── css/                     # Stylesheets
-│   └── js/                      # JavaScript files
-├── tests/                        # Comprehensive test suites
-│   ├── test_availability_tactics.py    # Availability tests
-│   ├── test_security_tactics.py        # Security tests
-│   ├── test_performance_tactics.py     # Performance tests
-│   ├── test_modifiability_tactics.py   # Modifiability tests
-│   ├── test_integrability_tactics.py   # Integrability tests
-│   ├── test_testability_tactics.py     # Testability tests
-│   ├── test_usability_tactics.py       # Usability tests
-│   ├── test_integration.py             # Integration tests
-│   ├── test_logic.py                   # Business logic tests
-│   ├── test_comprehensive_demo.py      # Comprehensive scenarios
-│   ├── run_all_tests.py                # Test runner
-│   ├── simple_test_runner.py           # Simple test runner
-│   └── conftest.py                     # Test fixtures
-├── db/                           # Database files
-│   └── init.sql                 # Database initialization script
-├── docs/                         # Documentation
-│   ├── ADR/                     # Architectural Decision Records
-│   └── UML/                     # UML diagrams
-├── comprehensive_quality_scenarios_test.py  # Quality scenario validation
-├── Project Deliverable 2 Documentation.md  # Checkpoint 2 documentation
-├── QUALITY_SCENARIO_VALIDATION_REPORT.md  # Quality scenario validation report
-├── TESTING_SUMMARY.md           # Testing summary and results
-├── POSTGRESQL_CONSISTENCY_UPDATE.md # Database consistency documentation
-├── Checkpoint2_Revised.md       # Checkpoint 2 requirements
-├── Checkpoint1.md               # Checkpoint 1 documentation
-├── Project Deliverable 1.md     # Project Deliverable 1 documentation
-├── requirements.txt              # Python dependencies
-└── run.py                       # Application entry point
+├── deploy/                          # Docker Compose files
+│   └── dockercompose.yml
+├── docker/                          # Container entrypoints/helpers
+│   ├── entrypoint.sh
+│   └── wait_for_db.py
+├── src/
+│   ├── main.py
+│   ├── config.py
+│   ├── database.py
+│   ├── models.py
+│   ├── blueprints/
+│   │   └── returns.py               # Customer/admin routes for RMAs
+│   ├── observability/               # Logging + metrics engine
+│   │   ├── metrics.py
+│   │   ├── business_metrics.py
+│   │   └── health.py
+│   ├── services/
+│   │   ├── flash_sale_service.py
+│   │   ├── partner_catalog_service.py
+│   │   ├── refund_service.py
+│   │   └── returns_service.py
+│   └── tactics/                     # Quality tactics implementation
+├── templates/                       # HTML templates (storefront, admin, returns)
+├── static/
+│   ├── css/
+│   ├── js/
+│   └── uploads/returns/             # Evidence photos
+├── tests/                           # Comprehensive pytest suites
+├── scripts/
+│   ├── apply_env_preset.py
+│   ├── bootstrap_super_admin.py
+│   ├── performance_scenario_runner.py
+│   ├── run_availability_failure.cmd
+│   ├── run_availability_load.cmd
+│   └── run_performance_load.cmd
+├── db/
+│   ├── init.sql
+│   ├── migrations/                  # e.g., 001_returns_module.sql
+│   └── seeds/                       # returns_demo.sql used in Docker demo
+├── docs/
+│   ├── ADR/
+│   ├── UML/
+│   └── Runbook.md
+├── Checkpoint1.md
+├── Checkpoint2_Revised.md
+├── Project Deliverable 2 Documentation.md
+├── Checkpoint3.md
+├── comprehensive_quality_scenarios_test.py
+├── requirements.txt
+└── run.py
 ```
 
 ## 🔧 Configuration
@@ -427,6 +544,8 @@ The application uses the following environment variables (configured in `.env`):
 | `DB_HOST` | Database host | localhost |
 | `DB_PORT` | Database port | 5432 |
 | `DB_NAME` | Database name | retail_management |
+| `THROTTLING_MAX_RPS` | Requests allowed per second before `/checkout` throttles | 100 |
+| `THROTTLING_WINDOW_SECONDS` | Sliding window size used by throttling manager | 1 |
 
 ### Application Settings
 Key application settings in `src/main.py`:
@@ -468,7 +587,7 @@ The system has been thoroughly tested and validated against all quality scenario
 | **Usability** | 2/2 | 100% | ✅ **PERFECT** |
 
 ### Response Measures Verified
-- **99% order acceptance** during flash sale overload
+- **99% order acceptance** during flash sale overload (1,000 RPS stimulus)
 - **< 5 minutes MTTR** for payment service recovery
 - **100% unauthorized access prevention** for partner APIs
 - **Zero malicious payloads** reaching the database
@@ -482,6 +601,15 @@ The system has been thoroughly tested and validated against all quality scenario
 - **< 5 seconds** test execution with dependency injection
 - **< 90 seconds** user error recovery time
 - **> 80% user satisfaction** for long-running tasks
+
+### Runtime SLO Evidence (Checkpoint 3)
+
+| Scenario | Target | Observed (Docker demo) | Instrumentation |
+|----------|--------|------------------------|-----------------|
+| **A.1 Availability** | ≥99 % orders accepted (completed or queued) & MTTR < 5 min while 1k RPS flash-sale traffic forces the payment connector to trip the circuit breaker | 99.5 % success, 2 min MTTR (`docs/QUALITY_SCENARIO_VALIDATION_REPORT.md`) | `orders_submitted_total`, `orders_accepted_total`, `payment_circuit_mttr_seconds`, `refunds_failed_total`, structured events rendered on `/admin/dashboard` |
+| **P.1 Performance** | p95 `POST /checkout` latency < 500 ms under flash-sale load (Manage Event Arrival / throttling) | 350 ms p95, 200 ms avg | `order_processing_latency_ms` histogram & throttling counters, surfaced on `/admin/dashboard` and `/admin/metrics` |
+
+Reproduce both scenarios with the steps in `docs/Runbook.md`.
 
 ## 🚨 Troubleshooting
 

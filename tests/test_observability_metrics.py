@@ -25,4 +25,5 @@ def test_metrics_snapshot_accumulates_counts():
     hist = snapshot["histograms"]["test_latency"][0]["stats"]
     assert hist["count"] == 2
     assert hist["max"] == 100
+    assert hist["p95"] == 100
 

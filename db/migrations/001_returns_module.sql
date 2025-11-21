@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS "ReturnItem" (
     "restocking_fee" DECIMAL(10, 2) DEFAULT 0.0
 );
 
+CREATE TABLE IF NOT EXISTS "ReturnPhoto" (
+    "photoID" SERIAL PRIMARY KEY,
+    "returnRequestID" INTEGER NOT NULL REFERENCES "ReturnRequest"("returnRequestID") ON DELETE CASCADE,
+    "file_path" VARCHAR(512) NOT NULL,
+    "uploaded_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS "ReturnShipment" (
     "shipmentID" SERIAL PRIMARY KEY,
     "returnRequestID" INTEGER NOT NULL REFERENCES "ReturnRequest"("returnRequestID") ON DELETE CASCADE,
@@ -70,7 +77,11 @@ CREATE TABLE IF NOT EXISTS "Refund" (
 CREATE INDEX IF NOT EXISTS "idx_returnrequest_status" ON "ReturnRequest"("status", "created_at");
 CREATE INDEX IF NOT EXISTS "idx_returnrequest_customer" ON "ReturnRequest"("customerID", "status");
 CREATE INDEX IF NOT EXISTS "idx_returnitem_request" ON "ReturnItem"("returnRequestID");
+CREATE INDEX IF NOT EXISTS "idx_returnphoto_request" ON "ReturnPhoto"("returnRequestID");
 CREATE INDEX IF NOT EXISTS "idx_refund_status" ON "Refund"("status");
+
+ALTER TABLE "User"
+    ADD COLUMN IF NOT EXISTS "role" VARCHAR(50) NOT NULL DEFAULT 'customer';
 
 COMMIT;
 

@@ -9,9 +9,12 @@
 </head>
 <body class="bg-gray-100 min-h-screen">
     {% include 'partials/navbar.html' %}
-    <div class="w-full max-w-xs mx-auto flex items-center justify-center py-12">
+    <div class="w-full max-w-md mx-auto flex items-center justify-center py-12">
         <form action="/register" method="post" class="bg-white shadow-md rounded-xl px-8 pt-6 pb-8 w-full">
             <h1 class="text-2xl font-bold text-center mb-6">Create Account</h1>
+            <p class="text-xs text-gray-500 text-center mb-4">
+                To create an admin account, select "Admin" below and enter the super admin token shared with you by the platform owner.
+            </p>
 
             <!-- --- CHANGE HIGHLIGHT: Error message is now a prominent alert box --- -->
             {% if error %}
@@ -38,6 +41,21 @@
                     Password
                 </label>
                 <input class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 mb-3 leading-tight focus:outline-none focus:shadow-outline" id="password" name="password" type="password" placeholder="******************" required>
+            </div>
+            <div class="mb-4">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="role">
+                    Role
+                </label>
+                <select id="role" name="role" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" onchange="document.getElementById('super_admin_token_group').classList.toggle('hidden', this.value !== 'admin');">
+                    <option value="customer" selected>Customer</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <div class="mb-4 hidden" id="super_admin_token_group">
+                <label class="block text-gray-700 text-sm font-bold mb-2" for="super_admin_token">
+                    Super Admin Token
+                </label>
+                <input class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" id="super_admin_token" name="super_admin_token" type="text" placeholder="Enter super admin token">
             </div>
             
             <div class="flex items-center justify-between">

@@ -4,40 +4,76 @@ This runbook now includes the Checkpoint 3 deployment + observability workflow i
 
 ## CP3 Demo Script (Docker → Dashboard → Returns)
 
-1. **Prep environment**
-   ```bash
-   cp env.example .env
-   # (Optional) force refunds to fail for the availability scenario
-   echo PAYMENT_REFUND_FAILURE_PROBABILITY=1.0 >> .env
-   ```
-2. **Start containers**
-   ```bash
-   docker compose up --build
-   ```
-   - Postgres seeds `db/init.sql`, the returns migration, and the demo sale (`RMA-CP3-DEMO-001`).
-   - `web` waits for DB, runs Gunicorn on `http://localhost:5000`.
-3. **Login & explore**
-   - Navigate to `/login`, sign in as user ID 1 (admin) or create a new account.
-   - Go to `/returns` to view/submit RMAs.
-   - Visit `/admin/dashboard` to verify health, counters, and latency tables.
-4. **Availability scenario (Payment circuit breaker)**
-   - Ensure `.env` forces failures (step 1) or retry refunds until a failure occurs.
-   - Approve the seeded RMA via `/admin/returns`, trigger refund; observe structured log and dashboard counters (`refunds_failed_total` increments).
-5. **Performance scenario (Flash sale throttling)**
-   - Use a script or browser to fire multiple `/checkout` submissions quickly (10+ requests/sec). Example:
-     ```python
-     import requests
-     for _ in range(20):
-         requests.post("http://localhost:5000/checkout", data={"payment_method": "Cash"})
+1. **Start / reset the stack**
+   - First run? `docker compose -f deploy/dockercompose.yml up --build` (the entrypoint seeds the DB and bootstraps `super_admin` automatically).
+   - Need a clean slate? `docker compose ... down -v` before the `up --build`.
+2. **Sign in and open dashboards**
+   - Browse to `http://localhost:5000/login`, log in as `super_admin / super_admin_92587`.
+   - Keep two tabs handy: `/returns` (for the seeded RMA) and `/admin/dashboard` (Quality Scenario cards).
+3. **Warm Availability A.1 (flash-sale overload)**
+   - Recommended one-liner:
+     ```cmd
+     scripts\run_availability_load.cmd
      ```
-   - Observe 429 responses, the throttling banner on the UI, and `http_requests_total` counters showing the spike.
-6. **Shutdown**
+     This command:
+     1. Applies the “availability” preset (`python scripts\apply_env_preset.py availability`)
+     2. Restarts `web` so Gunicorn picks up the new worker/thread counts
+     3. Restocks product 2 to 100000 units inside Postgres
+     4. Fires a 600-run, concurrency-80 `/checkout` burst (no manual typing)
+   - After the burst, refresh `/admin/dashboard` → Availability card should now show large Submitted/Accepted counts. If you still see timeouts, rerun with a lower concurrency or bump `GUNICORN_WORKERS/GUNICORN_THREADS/GUNICORN_TIMEOUT` in `.env`.
+4. **Capture MTTR (force the breaker)**
+   - One-liner:
+     ```cmd
+     scripts\run_availability_failure.cmd
+     ```
+     This applies the `availability-failure` preset (sets `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0`) and restarts `web`, then pauses with on-screen instructions.
+   - Follow the prompt: in the browser, walk `RMA-CP3-DEMO-001` through Receive → Inspection → Refund (leave method = Card). The first refund attempt opens the breaker; retry after ~60 s to capture MTTR < 5 min. The dashboard card flips to “Fulfilled” once both ≥99 % acceptance and MTTR thresholds are met.
+
+### Availability Quality Scenario A.1 – Flash Sale Payment Service Failure
+
+- **Source**: 1,000 concurrent end users (approximated by the `performance_scenario_runner` burst in `scripts\run_availability_load.cmd` using high `--runs` and `--concurrency` values).
+- **Stimulus**: External Payment Service times out or fails (simulated via `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0` in `scripts\run_availability_failure.cmd`).
+- **Environment**: Flash Sale Peak Load / Overloaded Mode (stack started via Docker, `availability` or `availability-failure` preset applied, and flash‑sale style `/checkout` burst running).
+- **Artifact**: External Payment Service connector and order/refund processing logic (`payment_service`, `refund_service`, and the Circuit Breaker + Graceful Degradation tactics).
+- **Response**: The system’s Circuit Breaker stops immediate payment attempts and **Graceful Degradation** routes work to the order/refund queue for asynchronous processing instead of failing the request.
+- **Response Measure**:
+  - At least **99 % of order/refund requests submitted are successfully accepted** (queued or completed) – visible on the Availability card (Submitted vs Accepted) and in metrics/logs.
+  - **Mean Time to Repair (MTTR) of the payment connection fault is < 5 minutes** – measured by the time between breaker‑open failures and the first successful retry in step 4.
+- **How these scripts validate A.1**:
+  - `scripts\run_availability_load.cmd` creates the flash‑sale overload against `/checkout`.
+  - `scripts\run_availability_failure.cmd` injects payment timeouts/failures and walks the refund flow until the breaker recovers.
+  - Use `/admin/dashboard` and `/admin/metrics` to confirm ≥99 % acceptance and MTTR < 5 minutes, fulfilling the Availability scenario.
+
+5. **Exercise Performance P.1 (throttling / Manage Event Arrival)**
+   - One-liner:
+     ```cmd
+     scripts\run_performance_load.cmd
+     ```
+     This applies the “performance” preset (lowers `THROTTLING_MAX_RPS` to 2), restarts `web`, restocks product 2, and fires the short `/checkout` burst with a 0.02s delay between attempts.
+   - Watch the script output for HTTP 429 entries, the storefront “throttled” banner, and verify the Performance card on `/admin/dashboard` shows p95 latency ≤ 500 ms (Fulfilled).
+
+### Performance Quality Scenario P.1 – Flash Sale Manage Event Arrival
+
+- **Source**: Automated Load Testing Tool (this repo’s `scripts\performance_scenario_runner.py`, invoked by `scripts\run_performance_load.cmd`).
+- **Stimulus**: A high‑rate stream of `/checkout` order placement requests (configure `--runs`, `--concurrency`, and `--delay` to approximate **1,000 order placement requests per second** during the burst).
+- **Environment**: Peak Load / Overloaded Mode during a Flash Sale (Docker stack running with the `performance` preset so `THROTTLING_MAX_RPS` and `THROTTLING_WINDOW_SECONDS` are active).
+- **Artifact**: Order Submission endpoint / API (`POST /checkout`) plus the throttling + queuing tactics.
+- **Response**: The system uses **Manage Event Arrival** (Throttling/Queuing) to limit concurrent processing, prioritizing throughput over unbounded latency. Extra requests receive HTTP 429 with a “System is busy, please try again” banner while accepted requests are processed or queued.
+- **Response Measure**:
+  - The **average latency for 95 % of accepted order requests remains below 500 ms** (p95 latency < 500 ms for HTTP 200s), as reported by `performance_scenario_runner.py` and on the Performance card on `/admin/dashboard`.
+  - Throttling/queuing is evident from a healthy mix of HTTP 200 and HTTP 429 responses without large spikes of 5xx/timeouts.
+- **How these scripts validate P.1**:
+  - `scripts\run_performance_load.cmd` applies the `performance` preset, restocks product 2, and drives `/checkout` at a controlled, high rate.
+  - The `performance_scenario_runner.py` summary shows total attempts, completed vs throttled, and p95 latency; `/admin/dashboard` mirrors these metrics.
+  - Together they demonstrate that under flash‑sale load the system throttles and queues requests while keeping p95 latency for accepted orders **< 500 ms**, fulfilling the Performance scenario.
+
+6. **Shutdown (when done)**
    ```bash
-   docker compose down
-   # optional: docker compose down -v  # to reset database volume
+   docker compose -f deploy/dockercompose.yml down
+   # optional reset: docker compose -f deploy/dockercompose.yml down -v
    ```
 
-> Need raw artifacts? Use `docker compose logs web --tail=200` for structured logs and `curl -H "Cookie: ..." http://localhost:5000/admin/metrics` for JSON snapshots.
+> Need raw artifacts? Use `docker compose -f deploy/dockercompose.yml logs web --tail=200` for structured logs and `curl -H "Cookie: ..." http://localhost:5000/admin/metrics` for JSON snapshots.
 
 # Checkpoint 2: Quality Tactics Test Suite
 

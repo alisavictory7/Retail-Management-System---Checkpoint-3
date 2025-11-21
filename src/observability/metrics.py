@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Any, Optional
+from math import ceil
+from typing import Dict, Tuple, Any, Optional, List
 
 MetricKey = Tuple[str, Tuple[Tuple[str, str], ...]]
 
@@ -21,20 +22,28 @@ class Histogram:
     total: float = 0.0
     min_value: float = field(default=float("inf"))
     max_value: float = field(default=float("-inf"))
+    values: deque = field(default_factory=lambda: deque(maxlen=1000))
 
     def observe(self, value: float) -> None:
         self.count += 1
         self.total += value
         self.min_value = min(self.min_value, value)
         self.max_value = max(self.max_value, value)
+        self.values.append(value)
 
     def snapshot(self) -> Dict[str, Any]:
         avg = self.total / self.count if self.count else 0.0
+        p95 = 0.0
+        if self.values:
+            sorted_values: List[float] = sorted(self.values)
+            index = max(0, ceil(0.95 * len(sorted_values)) - 1)
+            p95 = sorted_values[index]
         return {
             "count": self.count,
             "avg": avg,
             "min": None if self.count == 0 else self.min_value,
             "max": None if self.count == 0 else self.max_value,
+            "p95": p95 if self.values else None,
         }
 
 

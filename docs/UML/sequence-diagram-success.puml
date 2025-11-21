@@ -1,72 +1,94 @@
-@startuml System Sequence Diagram - Successful Sale Registration
+@startuml System Sequence Diagram - End-to-End Returns Workflow
 
 !theme plain
 skinparam sequenceMessageAlign center
 skinparam sequenceArrowThickness 1
-skinparam roundcorner 10
-skinparam maxmessagesize 40
-
-' Optimized for 4096px limit
-skinparam dpi 72
-skinparam scale 0.4
-skinparam participantFontSize 8
-skinparam participantFontStyle normal
+skinparam roundcorner 15
+skinparam maxmessagesize 50
+skinparam dpi 120
+skinparam participantFontSize 10
 skinparam participantBackgroundColor #E3F2FD
 skinparam participantBorderColor #1976D2
-skinparam participantBorderThickness 1
-skinparam messageFontSize 7
-skinparam messageFontStyle normal
-skinparam messageColor #333333
-skinparam noteBackgroundColor #FFF3CD
-skinparam noteBorderColor #856404
-skinparam noteBorderThickness 1
 skinparam actorBackgroundColor #FFEBEE
 skinparam actorBorderColor #D32F2F
-skinparam actorBorderThickness 1
+skinparam noteBackgroundColor #FFF3CD
+skinparam noteBorderColor #856404
 
 actor "Customer" as Customer
 participant "Browser" as Browser
 participant "Flask App" as Flask
-participant "Quality Manager" as QTM
-participant "Circuit Breaker" as CB
-participant "Database" as DB
+participant "Returns Service" as ReturnsService
+participant "Admin Portal" as AdminPortal
+participant "Payment Service\n(Circuit Breaker)" as PaymentService
+participant "Inventory Service" as Inventory
 
-Customer -> Browser: Navigate to checkout
-Browser -> Flask: GET /checkout
-Flask -> QTM: get_quality_manager()
-QTM --> Flask: Manager instance
-Flask --> Browser: Render checkout page
+== RMA Request ==
+Customer -> Browser: Open /returns
+Browser -> Flask: GET /returns
+Flask -> ReturnsService: fetch_completed_sales(user)
+ReturnsService --> Flask: sales + prior RMAs
+Flask --> Browser: Render RMA form
 
-Customer -> Browser: Submit payment
-Browser -> Flask: POST /process_payment
+Customer -> Browser: Submit return (items + photos)
+Browser -> Flask: POST /returns/request
+Flask -> ReturnsService: create_return_request(payload)
+ReturnsService -> ReturnsService: validate policy window\ncheck item quantities
+ReturnsService --> Flask: RMA created (PENDING_AUTHORIZATION)
+Flask --> Browser: Flash success + RMA number
 
-note over Flask: Security & Performance
-Flask -> QTM: authenticate_user(session)
-QTM -> DB: query User table
-DB --> QTM: user data
-QTM --> Flask: authenticated
+== Authorization & Logistics ==
+actor "Store Admin" as Admin
+Admin -> AdminPortal: Review /admin/returns
+AdminPortal -> ReturnsService: authorize_return(rma_id, approve=true)
+ReturnsService --> AdminPortal: status AUTHORIZED + RMA number
 
-Flask -> QTM: throttle_request(user_id)
-QTM --> Flask: request allowed
+Customer -> Browser: Provide shipment tracking
+Browser -> Flask: POST /returns/shipment
+Flask -> ReturnsService: record_shipment(rma_id, carrier, tracking)
+ReturnsService --> Flask: status IN_TRANSIT
 
-note over Flask: Circuit Breaker Protection
-Flask -> QTM: execute_with_circuit_breaker(payment_func)
-QTM -> CB: execute(payment_func)
-CB -> DB: query CircuitBreakerState
-DB --> CB: circuit state
-CB -> CB: process_payment()
-CB --> QTM: payment successful
-QTM --> Flask: payment processed
+Admin -> AdminPortal: Mark package received
+AdminPortal -> ReturnsService: mark_received(rma_id)
+ReturnsService --> AdminPortal: status RECEIVED
 
-note over Flask: Transaction Processing
-Flask -> DB: UPDATE Product SET stock = stock - quantity
-DB --> Flask: stock updated
-Flask -> DB: INSERT INTO Sale
-DB --> Flask: sale created
-Flask -> DB: INSERT INTO Payment
-DB --> Flask: payment recorded
+== Inspection ==
+Admin -> AdminPortal: Record inspection result
+AdminPortal -> ReturnsService: record_inspection(rma_id, APPROVED)
+ReturnsService --> AdminPortal: status APPROVED
 
-Flask --> Browser: JSON {success: true, sale_id: 123}
-Browser --> Customer: Display success message
+== Refund Execution ==
+alt Manual method (cash / store credit)
+    AdminPortal -> ReturnsService: initiate_refund(rma_id, method=manual)
+    ReturnsService -> Inventory: apply_return_stock(items)
+    Inventory --> ReturnsService: stock replenished
+    ReturnsService --> AdminPortal: status REFUNDED + manual reference
+else Card / Original method
+    AdminPortal -> ReturnsService: initiate_refund(rma_id, method=card/original)
+    ReturnsService -> PaymentService: execute_with_circuit_breaker(refund_fn)
+    PaymentService -> PaymentService: call mock gateway
+    PaymentService --> ReturnsService: refund success + reference
+    ReturnsService -> Inventory: apply_return_stock(items)
+    Inventory --> ReturnsService: stock replenished
+    ReturnsService --> AdminPortal: status REFUNDED + refund details
+end
+
+note over PaymentService
+  Availability Scenario A.1
+  - Circuit breaker emits MTTR metric
+  - Orders accepted counter updated
+end note
+
+note over ReturnsService
+  Stage coverage:
+  1) Submit request
+  2) Validate & authorize
+  3) Record shipment
+  4) Inspect
+  5) Issue refund & close
+end note
+
+AdminPortal --> Admin: Dashboard updated\n(RMA rate, cycle time)
+Flask --> Browser: Notify customer via UI/email
+Browser --> Customer: RMA closed + refund confirmation
 
 @enduml

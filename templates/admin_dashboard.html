@@ -5,40 +5,177 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-100 text-gray-900 min-h-screen">
     {% include 'partials/navbar.html' %}
 
     <main class="container mx-auto px-4 py-8 space-y-8">
-        <section class="grid md:grid-cols-3 gap-4">
+        <section class="grid gap-4 md:grid-cols-4">
             <div class="bg-white p-4 rounded-xl shadow">
                 <p class="text-sm text-gray-500 uppercase">System Status</p>
                 <p class="text-2xl font-semibold mt-2 {{ 'text-green-600' if db_status.status == 'UP' else 'text-red-600' }}">
                     {{ db_status.status }}
                 </p>
+                <p class="text-xs text-gray-400 mt-1">{{ db_status.message }}</p>
             </div>
             <div class="bg-white p-4 rounded-xl shadow">
-                <p class="text-sm text-gray-500 uppercase">Total Returns</p>
-                <p class="text-2xl font-semibold mt-2">
-                    {{
-                        metrics.counters.get('returns_created_total', [])
-                        | sum(attribute='value')
-                        if metrics.counters.get('returns_created_total') else 0
-                    }}
+                <p class="text-sm text-gray-500 uppercase">Error Rate</p>
+                <p class="text-2xl font-semibold mt-2 {{ 'text-red-600' if error_rate > 1 else 'text-green-600' }}">
+                    {{ error_rate }}%
                 </p>
+                <p class="text-xs text-gray-400 mt-1">Across all HTTP requests</p>
             </div>
             <div class="bg-white p-4 rounded-xl shadow">
-                <p class="text-sm text-gray-500 uppercase">Refund Success Rate</p>
-                {% set completed = metrics.counters.get('refunds_completed_total', []) | sum(attribute='value') if metrics.counters.get('refunds_completed_total') else 0 %}
-                {% set failed = metrics.counters.get('refunds_failed_total', []) | sum(attribute='value') if metrics.counters.get('refunds_failed_total') else 0 %}
-                {% set total = completed + failed %}
-                <p class="text-2xl font-semibold mt-2">
-                    {% if total > 0 %}
-                        {{ '%.0f' | format((completed / total) * 100) }}%
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </p>
+                <p class="text-sm text-gray-500 uppercase">Mean Orders / Day</p>
+                <p class="text-2xl font-semibold mt-2">{{ '%.2f' | format(orders_metrics.mean_per_day) }}</p>
+                <p class="text-xs text-gray-400 mt-1">Quarter: {{ selected_window.label }}</p>
+            </div>
+            <div class="bg-white p-4 rounded-xl shadow">
+                <p class="text-sm text-gray-500 uppercase">Mean Refunds / Day</p>
+                <p class="text-2xl font-semibold mt-2">{{ '%.2f' | format(refund_metrics.mean_per_day) }}</p>
+                <p class="text-xs text-gray-400 mt-1">Quarter: {{ selected_window.label }}</p>
+            </div>
+        </section>
+
+        <section class="grid gap-4 md:grid-cols-2">
+            <div class="bg-white p-4 rounded-xl shadow">
+                <p class="text-sm text-gray-500 uppercase">RMA Rate</p>
+                <p class="text-2xl font-semibold mt-2">{{ '%.2f' | format(rma_metrics.rate) }}%</p>
+                <p class="text-xs text-gray-400 mt-1">{{ rma_metrics.count }} return request(s) this quarter</p>
+            </div>
+            <div class="bg-white p-4 rounded-xl shadow">
+                <p class="text-sm text-gray-500 uppercase">RMA Cycle Time</p>
+                <p class="text-2xl font-semibold mt-2">{{ '%.1f' | format(rma_metrics.cycle_hours) }} hrs</p>
+                <p class="text-xs text-gray-400 mt-1">Avg time from submission to resolution</p>
+            </div>
+        </section>
+
+        <section class="bg-white p-6 rounded-xl shadow space-y-4">
+            <header class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                    <h2 class="text-xl font-semibold">Business KPIs</h2>
+                    <p class="text-sm text-gray-500">Orders and refunds between 2025 Q1 and 2050 Q4.</p>
+                </div>
+                <form method="get" class="flex items-center gap-2">
+                    <label for="quarter" class="text-sm text-gray-600">Quarter</label>
+                    <select id="quarter" name="quarter" class="border rounded px-2 py-1 text-sm">
+                        {% for window in quarter_windows %}
+                        <option value="{{ window.key }}" {% if window.key == selected_window.key %}selected{% endif %}>
+                            {{ window.label }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="bg-blue-500 text-white text-sm px-3 py-1 rounded">Apply</button>
+                </form>
+            </header>
+
+            <div class="grid gap-6 lg:grid-cols-2">
+                <div class="border rounded-xl p-4 bg-slate-50">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <p class="text-sm text-gray-500 uppercase">Orders</p>
+                            <p class="text-2xl font-semibold">{{ orders_metrics.total }}</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-xs text-gray-500">Peak day</p>
+                            <p class="text-base font-semibold">{{ orders_metrics.series_max }}</p>
+                        </div>
+                    </div>
+                    <div class="h-56">
+                        <canvas id="ordersChart" class="w-full h-full"></canvas>
+                    </div>
+                </div>
+                <div class="border rounded-xl p-4 bg-slate-50">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <p class="text-sm text-gray-500 uppercase">Refunds</p>
+                            <p class="text-2xl font-semibold">{{ refund_metrics.total }}</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-xs text-gray-500">Peak day</p>
+                            <p class="text-base font-semibold">{{ refund_metrics.series_max }}</p>
+                        </div>
+                    </div>
+                    <div class="h-56">
+                        <canvas id="refundsChart" class="w-full h-full"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="bg-white p-6 rounded-xl shadow space-y-4">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                    <h2 class="text-xl font-semibold">Quality Scenario Monitoring</h2>
+                    <p class="text-sm text-gray-500">Live view of Availability A.1 and Performance P.1 response measures.</p>
+                </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+                <div class="border rounded-xl p-4 bg-slate-50 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs uppercase text-gray-500">Availability A.1</p>
+                            <p class="font-semibold">Circuit Breaker + Graceful Degradation</p>
+                        </div>
+                        <span class="text-sm font-semibold {{ 'text-green-600' if scenario_metrics.A1.fulfilled else 'text-red-600' }}">
+                            {{ 'Fulfilled' if scenario_metrics.A1.fulfilled else 'Needs Attention' }}
+                        </span>
+                    </div>
+                    <ul class="text-sm text-gray-600 space-y-1">
+                        <li>
+                            Accepted / Submitted:
+                            {{ scenario_metrics.A1.accepted|int }} /
+                            {{ scenario_metrics.A1.submitted|int }}
+                        </li>
+                        <li>
+                            Success Rate:
+                            {% if scenario_metrics.A1.success_rate is not none %}
+                                {{ '%.1f'|format(scenario_metrics.A1.success_rate) }}%
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </li>
+                        {% if scenario_metrics.A1.submitted == 0 %}
+                        <li class="text-amber-600">
+                            Awaiting traffic: run the availability load to populate metrics.
+                        </li>
+                        {% endif %}
+                        <li>MTTR: {{ scenario_metrics.A1.mttr_display }}</li>
+                        <li class="{{ 'text-green-600' if scenario_metrics.A1.fulfilled else 'text-red-600' }}">
+                            Target ≥99% accepted, &lt; 5 min MTTR
+                        </li>
+                    </ul>
+                </div>
+                <div class="border rounded-xl p-4 bg-slate-50 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs uppercase text-gray-500">Performance P.1</p>
+                            <p class="font-semibold">Manage Event Arrival (Throttling)</p>
+                        </div>
+                        <span class="text-sm font-semibold {{ 'text-green-600' if scenario_metrics.P1.fulfilled else 'text-red-600' }}">
+                            {{ 'Fulfilled' if scenario_metrics.P1.fulfilled else 'Needs Attention' }}
+                        </span>
+                    </div>
+                    <ul class="text-sm text-gray-600 space-y-1">
+                        <li>
+                            95th Percentile Latency:
+                            {% if scenario_metrics.P1.latency_p95 is not none %}
+                                {{ '%.0f'|format(scenario_metrics.P1.latency_p95) }} ms
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </li>
+                        {% if scenario_metrics.P1.latency_p95 is none %}
+                        <li class="text-amber-600">
+                            Awaiting traffic: run the throttling burst to populate metrics.
+                        </li>
+                        {% endif %}
+                        <li class="{{ 'text-green-600' if scenario_metrics.P1.fulfilled else 'text-red-600' }}">
+                            Target ≤ 500 ms for accepted orders
+                        </li>
+                    </ul>
+                </div>
             </div>
         </section>
 
@@ -97,6 +234,63 @@
             </div>
         </section>
     </main>
+
+    <script>
+        const ordersSeries = {{ orders_metrics.series | tojson }};
+        const refundsSeries = {{ refund_metrics.series | tojson }};
+
+        function buildDataset(series) {
+            return {
+                labels: series.map(point => point.date),
+                data: series.map(point => point.count),
+            };
+        }
+
+        const ordersData = buildDataset(ordersSeries);
+        const refundsData = buildDataset(refundsSeries);
+
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+            },
+            scales: {
+                x: { ticks: { maxTicksLimit: 6 } },
+                y: { beginAtZero: true, ticks: { precision: 0 } },
+            },
+        };
+
+        new Chart(document.getElementById('ordersChart').getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: ordersData.labels,
+                datasets: [{
+                    data: ordersData.data,
+                    borderColor: '#2563eb',
+                    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                }],
+            },
+            options: commonOptions,
+        });
+
+        new Chart(document.getElementById('refundsChart').getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: refundsData.labels,
+                datasets: [{
+                    data: refundsData.data,
+                    borderColor: '#16a34a',
+                    backgroundColor: 'rgba(22, 163, 74, 0.1)',
+                    fill: true,
+                    tension: 0.3,
+                }],
+            },
+            options: commonOptions,
+        });
+    </script>
 </body>
 </html>
 

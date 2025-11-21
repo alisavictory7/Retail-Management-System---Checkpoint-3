@@ -1,180 +1,215 @@
-@startuml Class Diagram - Core Structure
+@startuml Class Diagram - Sales, Returns & Observability
 
 !theme plain
 skinparam classAttributeIconSize 0
-
-' Optimized for 4096px limit
-skinparam dpi 72
-skinparam scale 0.25
-skinparam classFontSize 6
-skinparam classFontStyle normal
+skinparam dpi 120
+skinparam classFontSize 10
 skinparam classBackgroundColor #FFFFFF
-skinparam classBorderColor #333333
-skinparam classBorderThickness 1
-skinparam packageBackgroundColor #F8F9FA
-skinparam packageBorderColor #6C757D
-skinparam packageBorderThickness 1
-skinparam arrowColor #333333
-skinparam arrowThickness 1
+skinparam classBorderColor #1F2933
+skinparam packageBackgroundColor #F5F7FA
+skinparam packageBorderColor #9AA5B1
+skinparam arrowColor #1F2933
 skinparam noteBackgroundColor #FFF3CD
 skinparam noteBorderColor #856404
-skinparam noteBorderThickness 1
-skinparam maxMessageSize 30
 
-' Core Domain Models
-class User {
-    - userID: Integer
-    - username: String
-    - email: String
-    + sales: List<Sale>
+package "Sales & Payments" {
+    class User {
+        + userID: int
+        + username: str
+        + email: str
+    }
+
+    class Product {
+        + productID: int
+        + name: str
+        + price: decimal
+        + stock: int
+        + get_discounted_unit_price(): decimal
+    }
+
+    class Sale {
+        + saleID: int
+        + totalAmount: decimal
+        + status: str
+        + sale_date: datetime
+    }
+
+    class SaleItem {
+        + saleItemID: int
+        + quantity: int
+        + subtotal: decimal
+    }
+
+    abstract class Payment {
+        + paymentID: int
+        + amount: decimal
+        + status: str
+        + authorized(): bool
+    }
+
+    class Cash {
+        + cash_tendered: decimal
+    }
+
+    class Card {
+        + card_number: str
+        + card_type: str
+    }
 }
 
-class Product {
-    - productID: Integer
-    - name: String
-    - price: Numeric
-    - stock: Integer
-    + get_discounted_unit_price(): float
+package "Returns & Refunds" {
+    class ReturnRequest {
+        + returnRequestID: int
+        + status: ReturnRequestStatus
+        + reason: ReturnReason
+        + details: str
+        + rma_number: str
+        + created_at: datetime
+        + updated_at: datetime
+    }
+
+    class ReturnItem {
+        + returnItemID: int
+        + quantity: int
+        + condition_report: str
+        + requested_refund_amount: decimal
+    }
+
+    class ReturnShipment {
+        + shipmentID: int
+        + carrier: str
+        + tracking_number: str
+        + shipped_at: datetime
+        + received_at: datetime
+    }
+
+    class Inspection {
+        + inspectionID: int
+        + inspected_by: str
+        + result: InspectionResult
+        + notes: str
+        + inspected_at: datetime
+    }
+
+    class Refund {
+        + refundID: int
+        + amount: decimal
+        + method: RefundMethod
+        + status: RefundStatus
+        + processed_at: datetime
+    }
+
+    class ReturnPhoto {
+        + photoID: int
+        + file_path: str
+        + uploaded_at: datetime
+    }
+
+    class ReturnsService {
+        + create_return_request()
+        + authorize_return()
+        + record_shipment()
+        + mark_received()
+        + record_inspection()
+    }
+
+    class RefundService {
+        + initiate_refund()
+        + handle_failure()
+    }
 }
 
-class Sale {
-    - saleID: Integer
-    - userID: Integer
-    - totalAmount: Numeric
-    - status: String
-    + user: User
-    + items: List<SaleItem>
-    + payments: List<Payment>
+package "Reliability & Observability" {
+    class QualityTacticsManager {
+        + check_throttling()
+        + execute_with_circuit_breaker()
+        + queue_order_for_retry()
+    	+ get_system_health()
+    }
+
+    class CircuitBreakerState {
+        + service_name: str
+        + state: str
+        + failure_count: int
+        + next_attempt_time: datetime
+    }
+
+    class OrderQueue {
+        + queueID: int
+        + saleID: int
+        + queue_type: str
+        + priority: int
+        + status: str
+    }
+
+    class SystemMetrics {
+        + metricID: int
+        + metric_name: str
+        + metric_value: float
+    	+ metric_unit: str
+    	+ tags: json
+        + timestamp: datetime
+    }
+
+    class ObservabilityDashboard {
+        + render_admin_dashboard()
+        + show_quality_scenarios()
+        + show_rma_kpis()
+    }
 }
 
-class SaleItem {
-    - saleItemID: Integer
-    - quantity: Integer
-    - subtotal: Numeric
-    + sale: Sale
-    + product: Product
-}
+User ||--o{ Sale : places
+Sale ||--o{ SaleItem : contains
+Sale ||--o{ Payment : "0..* payments"
+Payment <|-- Cash
+Payment <|-- Card
+Product ||--o{ SaleItem : is_sold_in
 
-class Payment {
-    - paymentID: Integer
-    - amount: Numeric
-    - status: String
-    + authorized(): bool
-}
+Sale ||--o{ ReturnRequest : may_spawn
+ReturnRequest ||--o{ ReturnItem : line_items
+ReturnRequest ||-- ReturnShipment : logistics
+ReturnRequest ||-- Inspection : QA
+ReturnRequest ||-- Refund : disposition
+ReturnRequest ||--o{ ReturnPhoto : evidence
+Refund --> Payment : references_original
+ReturnsService ..> ReturnRequest : manages
+ReturnsService ..> ReturnItem
+ReturnsService ..> ReturnShipment
+ReturnsService ..> Inspection
+ReturnsService ..> ReturnPhoto
+RefundService ..> Refund
+RefundService ..> Payment
+RefundService ..> ReturnsService : notifies
 
-class Cash {
-    - cash_tendered: Numeric
-}
+QualityTacticsManager --> CircuitBreakerState : persists_state
+QualityTacticsManager --> OrderQueue : enqueues
+QualityTacticsManager --> SystemMetrics : emits_metrics
+ObservabilityDashboard --> SystemMetrics : queries
+ObservabilityDashboard --> QualityTacticsManager : surfaces_status
+ReturnsService --> QualityTacticsManager : uses_metrics
+RefundService --> QualityTacticsManager : uses_circuit_breaker
 
-class Card {
-    - card_number: String
-    - card_type: String
-    + authorized(): bool
-}
-
-' Quality Tactics Manager
-class QualityTacticsManager {
-    - circuit_breaker: CircuitBreaker
-    - security: SecurityManager
-    - throttling: ThrottlingManager
-    - order_queue: OrderQueueManager
-    + execute_with_circuit_breaker(): bool
-    + authenticate_partner(): bool
-    + throttle_request(): bool
-    + enqueue_order(): bool
-}
-
-' Key Quality Tactics Models
-class CircuitBreakerState {
-    - service_name: String
-    - state: String
-    - failure_count: Integer
-    - failure_threshold: Integer
-}
-
-class OrderQueue {
-    - queueID: Integer
-    - saleID: Integer
-    - priority: Integer
-    - status: String
-}
-
-class FeatureToggle {
-    - feature_name: String
-    - is_enabled: Boolean
-    - rollout_percentage: Integer
-}
-
-class FlashSale {
-    - flashSaleID: Integer
-    - productID: Integer
-    - start_time: DateTime
-    - end_time: DateTime
-    - discount_percent: Numeric
-    - max_quantity: Integer
-    + is_active(): bool
-}
-
-class Partner {
-    - partnerID: Integer
-    - name: String
-    - api_endpoint: String
-    - status: String
-}
-
-class PartnerAPIKey {
-    - keyID: Integer
-    - partnerID: Integer
-    - api_key: String
-    - is_active: Boolean
-    + partner: Partner
-}
-
-class AuditLog {
-    - auditID: Integer
-    - event_type: String
-    - entity_type: String
-    - action: String
-    - timestamp: DateTime
-    - success: Boolean
-}
-
-class SystemMetrics {
-    - metricID: Integer
-    - metric_name: String
-    - metric_value: Numeric
-    - timestamp: DateTime
-}
-
-' Relationships
-User ||--o{ Sale : "has"
-Sale ||--o{ SaleItem : "contains"
-Sale ||--o{ Payment : "has"
-Payment <|-- Cash : "extends"
-Payment <|-- Card : "extends"
-
-QualityTacticsManager ||--|| CircuitBreakerState : "uses"
-QualityTacticsManager ||--o{ OrderQueue : "manages"
-QualityTacticsManager ||--o{ FeatureToggle : "manages"
-
-Product ||--o{ FlashSale : "has"
-Partner ||--o{ PartnerAPIKey : "has"
-
-QualityTacticsManager ||--o{ AuditLog : "manages"
-QualityTacticsManager ||--o{ SystemMetrics : "manages"
-
-note right of QualityTacticsManager
-  Quality Tactics Manager
-  - Central coordinator
-  - Implements 14+ tactics
-  - Provides unified interface
+note right of ReturnRequest
+  RMA lifecycle:
+  PENDING_AUTHORIZATION →
+  AUTHORIZED → IN_TRANSIT →
+  RECEIVED → UNDER_INSPECTION →
+  APPROVED/REJECTED → REFUNDED
 end note
 
-note right of CircuitBreakerState
-  Circuit Breaker State
-  - Tracks service health
-  - Prevents cascading failures
-  - Enables graceful degradation
+note right of ObservabilityDashboard
+  Admin dashboard highlights:
+  - RMA rate & cycle time
+  - A.1 success rate & MTTR
+  - P.1 latency (p95)
+  - Buckets align with Config.DEFAULT_TIMEZONE
+end note
+
+note right of RefundService
+  Refund routing
+  - Manual methods (cash / store credit) stay in-app
+  - Card/original methods go through PaymentService
+  - Reference stored for both paths
 end note
 
 @enduml

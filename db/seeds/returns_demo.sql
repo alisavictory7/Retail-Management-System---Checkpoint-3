@@ -3,43 +3,55 @@
 
 BEGIN;
 
+CREATE TEMP TABLE temp_rma_requests ON COMMIT DROP AS
+SELECT "returnRequestID", "saleID"
+FROM "ReturnRequest"
+WHERE "rma_number" = 'RMA-CP3-DEMO-001';
+
 DELETE FROM "Refund"
 WHERE "returnRequestID" IN (
-    SELECT "returnRequestID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "returnRequestID" FROM temp_rma_requests
 );
 
 DELETE FROM "ReturnShipment"
 WHERE "returnRequestID" IN (
-    SELECT "returnRequestID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "returnRequestID" FROM temp_rma_requests
 );
 
 DELETE FROM "Inspection"
 WHERE "returnRequestID" IN (
-    SELECT "returnRequestID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "returnRequestID" FROM temp_rma_requests
 );
 
 DELETE FROM "ReturnItem"
 WHERE "returnRequestID" IN (
-    SELECT "returnRequestID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "returnRequestID" FROM temp_rma_requests
+);
+
+DELETE FROM "ReturnPhoto"
+WHERE "returnRequestID" IN (
+    SELECT "returnRequestID" FROM temp_rma_requests
+);
+
+DELETE FROM "ReturnRequest"
+WHERE "returnRequestID" IN (
+    SELECT "returnRequestID" FROM temp_rma_requests
 );
 
 DELETE FROM "SaleItem"
 WHERE "saleID" IN (
-    SELECT "saleID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "saleID" FROM temp_rma_requests
 );
 
 DELETE FROM "Payment"
 WHERE "saleID" IN (
-    SELECT "saleID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "saleID" FROM temp_rma_requests
 );
 
 DELETE FROM "Sale"
 WHERE "saleID" IN (
-    SELECT "saleID" FROM "ReturnRequest" WHERE "rma_number" = 'RMA-CP3-DEMO-001'
+    SELECT "saleID" FROM temp_rma_requests
 );
-
-DELETE FROM "ReturnRequest"
-WHERE "rma_number" = 'RMA-CP3-DEMO-001';
 
 WITH demo_sale AS (
     INSERT INTO "Sale" ("userID", "sale_date", "totalAmount", "status")
@@ -69,6 +81,11 @@ demo_return_item AS (
     SELECT demo_return."returnRequestID", demo_item."saleItemID", 1, 'Visual inspection pending', 0.00
     FROM demo_return
     JOIN demo_item ON demo_item."saleID" = demo_return."saleID"
+),
+demo_return_photos AS (
+    INSERT INTO "ReturnPhoto" ("returnRequestID", "file_path", "uploaded_at")
+    SELECT "returnRequestID", 'uploads/returns/demo-rma-photo.jpg', NOW() - INTERVAL '2 days'
+    FROM demo_return
 ),
 demo_shipment AS (
     INSERT INTO "ReturnShipment" ("returnRequestID", "carrier", "tracking_number", "shipped_at", "received_at", "notes")

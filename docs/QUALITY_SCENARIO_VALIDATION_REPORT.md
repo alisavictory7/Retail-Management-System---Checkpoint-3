@@ -131,12 +131,12 @@ The quality scenario validation was conducted using a comprehensive test suite t
 
 ### Availability Scenario A.1 – Payment Circuit Breaker Protects Refund Flow
 
-- **Environment:** `.env` with `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0`, containers started via `docker compose up --build`.
+- **Environment:** `.env` with `PAYMENT_REFUND_FAILURE_PROBABILITY=1.0`, containers started via `docker compose -f deploy/dockercompose.yml up --build`.
 - **Stimulus:** Admin approves `RMA-CP3-DEMO-001` and triggers a refund while the simulated payment gateway keeps timing out.
 - **Expected Response:** Circuit breaker opens, refund is marked `FAILED`, inventory is not restocked, logs + metrics capture the failure.
 - **Observed Artifacts:**
 
-Structured log (from `docker compose logs web`):
+Structured log (from `docker compose -f deploy/dockercompose.yml logs web`):
 
 ```
 {"timestamp":"2025-11-18T22:47:13.214Z","level":"WARNING","logger":"src.services.payment_service","message":"Refund attempt failed via circuit breaker","request_id":"b4a27a78-7f8d-45d7-9d2a-5d0d1c6a9134","path":"/admin/returns/201/refund","method":"POST","user_id":1,"reason":"Payment processor timeout"}

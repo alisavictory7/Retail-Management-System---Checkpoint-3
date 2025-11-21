@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from uuid import uuid4
 
 from flask import (
     Blueprint,
@@ -13,12 +15,16 @@ from flask import (
     jsonify,
     abort,
     flash,
+    current_app,
 )
+from werkzeug.utils import secure_filename
 from sqlalchemy import desc
 
 from src.database import get_db
 from src.models import (
     Sale,
+    SaleItem,
+    Payment,
     ReturnItem,
     ReturnRequest,
     ReturnRequestStatus,
@@ -72,8 +78,12 @@ def view_returns():
 
     completed_sales = (
         db.query(Sale)
-        .filter_by(userID=user_id)
-        .filter(Sale._status == "completed")
+        .filter(
+            Sale.userID == user_id,
+            Sale._status == "completed",
+            Sale.payments.any(Payment._status == "completed"),
+            Sale.items.any(SaleItem.quantity > 0),
+        )
         .order_by(desc(Sale._sale_date))
         .limit(10)
         .all()
@@ -85,11 +95,17 @@ def view_returns():
         .all()
     )
 
+    max_photos = current_app.config.get("RETURNS_MAX_PHOTOS", 20)
+    allowed_ext = current_app.config.get("RETURNS_ALLOWED_EXTENSIONS") or ()
+    allowed_ext_label = ", ".join(ext.upper() for ext in allowed_ext) if allowed_ext else ""
+
     return render_template(
         "returns.html",
         sales=completed_sales,
         return_requests=return_requests,
         is_admin=_is_admin(),
+        max_photos=max_photos,
+        allowed_photo_extensions=allowed_ext_label,
     )
 
 
@@ -102,7 +118,11 @@ def submit_return_request():
     sale_id = request.form.get("sale_id")
     reason = request.form.get("reason")
     details = request.form.get("details")
-    photos = request.form.get("photos_url")
+    photo_files = request.files.getlist("photos")
+    photo_paths, error = _process_uploaded_photos(photo_files)
+    if error:
+        flash(error, "error")
+        return redirect(url_for("returns.view_returns"))
 
     if not sale_id or not reason:
         flash("Sale and reason are required to submit a return.", "error")
@@ -126,7 +146,7 @@ def submit_return_request():
         items=items_payload,
         reason=reason,
         details=details,
-        photos_url=photos,
+        photos=photo_paths,
     )
     flash(message, "success" if success else "error")
     return redirect(url_for("returns.view_returns"))
@@ -160,13 +180,24 @@ def api_create_return():
     if not sale_id or not reason or not isinstance(items, list):
         return jsonify({"error": "sale_id, reason, and items are required"}), 400
 
+    photos_payload = payload.get("photos") or []
+    if photos_payload and not isinstance(photos_payload, list):
+        return jsonify({"error": "photos must be an array of strings"}), 400
+    legacy_photo = payload.get("photos_url")
+    if legacy_photo and isinstance(legacy_photo, str):
+        photos_payload = list(photos_payload) + [legacy_photo]
+    max_photos = current_app.config.get("RETURNS_MAX_PHOTOS", 20)
+    sanitized_api_photos = [str(photo).strip() for photo in photos_payload if isinstance(photo, str) and photo.strip()]
+    if len(sanitized_api_photos) > max_photos:
+        return jsonify({"error": f"You can upload up to {max_photos} photos per return."}), 400
+
     success, message, request_obj = _get_returns_service().create_return_request(
         sale_id=sale_id,
         customer_id=session["user_id"],
         items=items,
         reason=reason,
         details=payload.get("details"),
-        photos_url=payload.get("photos_url"),
+        photos=sanitized_api_photos,
     )
 
     status_code = 200 if success else 400
@@ -388,6 +419,61 @@ def _extract_item_quantities(form_data: Dict[str, Any]) -> List[Dict[str, int]]:
     return items
 
 
+def _process_uploaded_photos(file_storages: List[Any]) -> Tuple[List[str], Optional[str]]:
+    if not file_storages:
+        return [], None
+
+    upload_dir = Path(current_app.config.get("RETURNS_UPLOAD_DIR", Path("static/uploads/returns")))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    relative_subdir = current_app.config.get("RETURNS_UPLOAD_SUBDIR", "uploads/returns").strip("/")
+    allowed_ext = {ext.lower() for ext in (current_app.config.get("RETURNS_ALLOWED_EXTENSIONS") or [])}
+    max_photos = current_app.config.get("RETURNS_MAX_PHOTOS", 20)
+
+    saved_paths: List[str] = []
+    saved_files: List[Path] = []
+
+    for storage in file_storages:
+        if not storage or not getattr(storage, "filename", None):
+            continue
+        if len(saved_paths) >= max_photos:
+            _cleanup_files(saved_files)
+            return [], f"You can upload up to {max_photos} photos per return."
+
+        filename = secure_filename(storage.filename)
+        if not filename:
+            continue
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if allowed_ext and ext not in allowed_ext:
+            _cleanup_files(saved_files)
+            allowed_list = ", ".join(sorted(ext.upper() for ext in allowed_ext))
+            return [], f"Unsupported file type '.{ext}'. Allowed types: {allowed_list}."
+
+        unique_name = f"{uuid4().hex[:8]}_{filename}"
+        destination = upload_dir / unique_name
+        try:
+            storage.save(destination)
+        except Exception as exc:  # noqa: BLE001
+            _cleanup_files(saved_files)
+            current_app.logger.error("Failed to save uploaded photo: %s", exc)
+            return [], "Failed to save uploaded photos. Please try again."
+
+        saved_files.append(destination)
+        saved_paths.append(f"{relative_subdir}/{unique_name}")
+
+    return saved_paths, None
+
+
+def _cleanup_files(files: List[Path]) -> None:
+    for path in files:
+        try:
+            path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        except TypeError:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            continue
+
+
 def _serialize_return_request(return_request: ReturnRequest) -> Dict[str, Any]:
     shipment = return_request.shipment
     inspection = return_request.inspection
@@ -403,6 +489,7 @@ def _serialize_return_request(return_request: ReturnRequest) -> Dict[str, Any]:
         "created_at": _serialize_dt(return_request.created_at),
         "updated_at": _serialize_dt(return_request.updated_at),
         "items": [_serialize_return_item(item) for item in return_request.return_items],
+        "photos": [_serialize_photo(photo) for photo in return_request.photos],
         "shipment": {
             "carrier": shipment.carrier,
             "tracking_number": shipment.tracking_number,
@@ -464,4 +551,22 @@ def _json_admin_response(success: bool, message: str, request_obj: Optional[Retu
     if request_obj:
         body["return"] = _serialize_return_request(request_obj)
     return jsonify(body), status
+
+
+def _serialize_photo(photo: Any) -> Dict[str, Any]:
+    path = getattr(photo, "file_path", "")
+    return {
+        "path": path,
+        "url": _photo_public_url(path, external=True),
+        "uploaded_at": _serialize_dt(getattr(photo, "uploaded_at", None)),
+    }
+
+
+def _photo_public_url(path: str, external: bool = False) -> str:
+    if not path:
+        return ""
+    normalized = path.strip()
+    if normalized.lower().startswith(("http://", "https://")):
+        return normalized
+    return url_for("static", filename=normalized, _external=external)
 

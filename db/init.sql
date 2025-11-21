@@ -9,6 +9,7 @@ DROP TABLE IF EXISTS "PartnerAPIKey";
 DROP TABLE IF EXISTS "MessageQueue";
 DROP TABLE IF EXISTS "TestRecord";
 DROP TABLE IF EXISTS "SystemMetrics";
+DROP TABLE IF EXISTS "ReturnPhoto";
 DROP TABLE IF EXISTS "ReturnShipment";
 DROP TABLE IF EXISTS "Inspection";
 DROP TABLE IF EXISTS "Refund";
@@ -34,7 +35,8 @@ CREATE TABLE "User" (
     "username" VARCHAR(255) UNIQUE NOT NULL,
     "passwordHash" VARCHAR(255) NOT NULL,
     "email" VARCHAR(255) UNIQUE NOT NULL,
-    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "role" VARCHAR(50) NOT NULL DEFAULT 'customer'
 );
 
 CREATE TABLE "Product" (
@@ -126,6 +128,13 @@ CREATE TABLE "ReturnItem" (
     "restocking_fee" DECIMAL(10, 2) DEFAULT 0.0
 );
 
+CREATE TABLE "ReturnPhoto" (
+    "photoID" SERIAL PRIMARY KEY,
+    "returnRequestID" INTEGER NOT NULL REFERENCES "ReturnRequest"("returnRequestID") ON DELETE CASCADE,
+    "file_path" VARCHAR(512) NOT NULL,
+    "uploaded_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 CREATE TABLE "ReturnShipment" (
     "shipmentID" SERIAL PRIMARY KEY,
     "returnRequestID" INTEGER NOT NULL REFERENCES "ReturnRequest"("returnRequestID") ON DELETE CASCADE,
@@ -168,12 +177,13 @@ INSERT INTO "Product" ("name", "description", "price", "stock", "shipping_weight
 ('Keyboard', 'A mechanical keyboard.', 75.00, 150, 0.8, 15.00, 'China', TRUE),
 ('Software License', 'A digital software license.', 300.00, 80, 0.0, 0.00, 'USA', FALSE);
 
-INSERT INTO "User" ("username", "passwordHash", "email") VALUES
-('testuser', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'test@example.com'),
-('john_doe', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'john.doe@example.com'),
-('jane_smith', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'jane.smith@example.com'),
-('alice_jones', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'alice.jones@example.com'),
-('bob_brown', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'bob.brown@example.com');
+INSERT INTO "User" ("username", "passwordHash", "email", "role") VALUES
+('super_admin', 'pbkdf2:sha256:600000$m8WWHC5f0yoF3tUV$35ac416c57cf3c702c5980761ef8e37ad46cfb4c28d881ff9c814f07141252c0', 'super_admin@example.com', 'admin'),
+('testuser', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'test@example.com', 'customer'),
+('john_doe', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'john.doe@example.com', 'customer'),
+('jane_smith', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'jane.smith@example.com', 'customer'),
+('alice_jones', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'alice.jones@example.com', 'customer'),
+('bob_brown', 'pbkdf2:sha256:600000$lY1E6n8k3v9a2Z3j$c8b7c6a5b4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7', 'bob.brown@example.com', 'customer');
 
 -- Demo sale + return workflow for Checkpoint 3 storytelling
 WITH demo_sale AS (
@@ -204,6 +214,11 @@ demo_return_item AS (
     SELECT demo_return."returnRequestID", demo_item."saleItemID", 1, 'Visual inspection pending', 0.00
     FROM demo_return
     JOIN demo_item ON demo_item."saleID" = demo_return."saleID"
+),
+demo_return_photos AS (
+    INSERT INTO "ReturnPhoto" ("returnRequestID", "file_path", "uploaded_at")
+    SELECT "returnRequestID", 'uploads/returns/demo-rma-photo.jpg', NOW() - INTERVAL '2 days'
+    FROM demo_return
 ),
 demo_shipment AS (
     INSERT INTO "ReturnShipment" ("returnRequestID", "carrier", "tracking_number", "shipped_at", "received_at", "notes")

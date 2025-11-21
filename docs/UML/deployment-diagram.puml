@@ -1,127 +1,85 @@
-@startuml Deployment Diagram - Client + Database Architecture
+@startuml Deployment Diagram - Dockerized Client + Database Architecture
 
 !theme plain
 skinparam componentStyle rectangle
 skinparam packageStyle rectangle
-
-' Optimized for 4096px limit
-skinparam dpi 72
-skinparam scale 0.3
-skinparam componentFontSize 7
-skinparam componentFontStyle normal
+skinparam dpi 120
+skinparam componentFontSize 10
 skinparam componentBackgroundColor #E3F2FD
 skinparam componentBorderColor #1976D2
-skinparam componentBorderThickness 1
 skinparam packageBackgroundColor #F3E5F5
 skinparam packageBorderColor #7B1FA2
-skinparam packageBorderThickness 1
-skinparam databaseBackgroundColor #E8F5E8
-skinparam databaseBorderColor #388E3C
-skinparam databaseBorderThickness 1
+skinparam databaseBackgroundColor #E8F5E9
+skinparam databaseBorderColor #2E7D32
+skinparam arrowColor #1F2933
 skinparam noteBackgroundColor #FFF3CD
 skinparam noteBorderColor #856404
-skinparam noteBorderThickness 1
-skinparam arrowColor #333333
-skinparam arrowThickness 1
 
-package "Client Tier" {
-    [Web Browser] as Browser
-    [Mobile App] as Mobile
-    [Partner API Client] as PartnerClient
-}
+node "Customer Browser" as CustomerBrowser
+node "Admin Browser" as AdminBrowser
 
-package "Application Tier" {
-    [Flask Web App] as Flask
-    [Quality Tactics Manager] as QTM
-    
-    package "Availability Tactics" {
-        [Circuit Breaker] as CB
-        [Graceful Degradation] as GD
-        [Retry Manager] as Retry
-    }
-    
-    package "Security Tactics" {
-        [Auth Manager] as Auth
-        [Input Validator] as Validator
-    }
-    
-    package "Performance Tactics" {
-        [Throttling Manager] as Throttle
-        [Order Queue Manager] as Queue
-        [Concurrency Manager] as Concurrency
-    }
-    
-    package "Business Services" {
-        [Flash Sale Service] as FlashSale
-        [Partner Catalog Service] as PartnerCatalog
+node "Docker Host" {
+    frame "docker compose stack" {
+        node "web\n(Gunicorn + Flask)" as WebContainer {
+            component "Flask Application\n(main.py + blueprints)" as Flask
+            component "Returns & Refunds Module\n(services + templates)" as ReturnsModule
+            component "Quality Tactics Manager" as QTM
+            component "Observability Dashboard\n(/admin/dashboard)" as Dashboard
+        }
+
+        node "db\n(PostgreSQL 15)" as DbContainer {
+            database "Retail DB\n(core tables + RMA + metrics)" as RetailDB
+            artifact "Persistent Volume\npostgres_data" as Volume
+        }
     }
 }
 
-package "Data Tier" {
-    database "PostgreSQL Database" as DB {
-        [Core Tables] as CoreTables
-        [Quality Tactics Tables] as TacticTables
-        [Flash Sale Tables] as FlashTables
-        [Partner Tables] as PartnerTables
-    }
+node "External Services" {
+    component "Mock Payment Gateway" as PaymentGateway
+    component "Partner APIs" as PartnerAPIs
 }
 
-package "External Services" {
-    [Payment Gateway] as PaymentGateway
-    [Partner APIs] as PartnerAPIs
+node "Monitoring Tooling" {
+    component "Structured Logs" as Logs
+    component "Metrics Snapshot\n(/admin/metrics)" as MetricsEndpoint
 }
 
-' Client connections
-Browser --> Flask : HTTP/HTTPS
-Mobile --> Flask : REST API
-PartnerClient --> Flask : API Auth
+CustomerBrowser --> Flask : HTTPS\nstorefront & checkout
+AdminBrowser --> Dashboard : HTTPS\nadmin console
+Flask --> ReturnsModule : invoke RMA workflow
+Flask --> QTM : apply tactics
+QTM --> RetailDB : read/write\nCircuitBreakerState\nOrderQueue
+ReturnsModule --> RetailDB : persist RMA entities
+Dashboard --> MetricsEndpoint : poll JSON
+Flask --> RetailDB : SQLAlchemy ORM
+RetailDB --> Volume : data files
 
-' Application tier connections
-Flask --> QTM : Quality Tactics
-Flask --> FlashSale : Business Logic
-Flask --> PartnerCatalog : Business Logic
+Flask --> PaymentGateway : Refund / charge
+Flask --> PartnerAPIs : Catalog sync
+Logs <- Flask : structured JSON
+MetricsEndpoint <- QTM : counters/histograms/events
 
-' Quality tactics connections
-QTM --> CB : Circuit Breaker
-QTM --> GD : Graceful Degradation
-QTM --> Retry : Retry Logic
-QTM --> Auth : Authentication
-QTM --> Validator : Input Validation
-QTM --> Throttle : Rate Limiting
-QTM --> Queue : Order Queuing
-QTM --> Concurrency : Concurrency Control
-
-' Database connections
-Flask --> CoreTables : User, Product, Sale
-CB --> TacticTables : CircuitBreakerState
-Queue --> TacticTables : OrderQueue
-Auth --> TacticTables : AuditLog
-FlashSale --> FlashTables : FlashSale, Reservation
-PartnerCatalog --> PartnerTables : Partner, APIKey
-
-' External service connections
-FlashSale --> PaymentGateway : Payment Processing
-PartnerCatalog --> PartnerAPIs : Data Sync
-
-note right of Flask
-  Flask Web Application
-  - Handles HTTP requests
-  - Manages user sessions
-  - Coordinates quality tactics
+note right of WebContainer
+  Flask container bundles:
+  - Gunicorn workers
+  - Returns blueprint + services
+  - Observability middleware
+  - Quality tactics manager
 end note
 
-note right of QTM
-  Quality Tactics Manager
-  - Central coordinator
-  - Implements 14+ tactics
-  - Provides unified interface
+note right of DbContainer
+  Postgres container bootstraps via
+  `db/init.sql`, migrations, and
+  demo seeds. Volumes keep state
+  between compose restarts.
 end note
 
-note right of DB
-  PostgreSQL Database
-  - ACID compliant transactions
-  - Supports all quality tactics
-  - Stores business data
+note right of Dashboard
+  Admin dashboard surfaces:
+  - RMA rate & cycle time
+  - Scenario A.1 and P.1 KPIs
+  - HTTP latency & recent events
+  - Metrics bucketed using Config.DEFAULT_TIMEZONE
 end note
 
 @enduml

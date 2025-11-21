@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from .base import BaseTactic, BaseQueue
 from ..models import OrderQueue, SystemMetrics, AuditLog
+from src.observability import increment_counter, observe_latency, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,14 @@ class ThrottlingManager(BaseTactic):
     """Manage Event Arrival tactic - Throttling for flash sales"""
     
     def __init__(self, db_session: Session, config: Dict[str, Any] = None):
+        config = config or {}
         super().__init__("throttling_manager", config)
         self.db = db_session
         self.max_requests_per_second = config.get('max_rps', 100)
         self.window_size = config.get('window_size', 1)  # seconds
-        self.request_times = []
-        self.lock = threading.Lock()
+        shared_state = config.setdefault('_shared_state', {})
+        self.request_times = shared_state.setdefault('request_times', [])
+        self.lock = shared_state.setdefault('lock', threading.Lock())
     
     def execute(self, request_data: Dict[str, Any]) -> Tuple[bool, str]:
         """Check if request should be throttled"""
@@ -37,7 +40,7 @@ class ThrottlingManager(BaseTactic):
                 
                 # Remove old requests outside the window
                 cutoff_time = now - timedelta(seconds=self.window_size)
-                self.request_times = [req_time for req_time in self.request_times if req_time > cutoff_time]
+                self.request_times[:] = [req_time for req_time in self.request_times if req_time > cutoff_time]
                 
                 # Check if we're under the limit
                 if len(self.request_times) < self.max_requests_per_second:
@@ -75,6 +78,8 @@ class OrderQueueManager(BaseQueue):
     def enqueue_order(self, order_data: Dict[str, Any], priority: int = 0) -> Tuple[bool, str]:
         """Enqueue order for processing"""
         try:
+            start_time = time.perf_counter()
+            increment_counter("orders_submitted_total", labels={"source": "queue"})
             # Create database record
             queue_item = OrderQueue(
                 saleID=order_data.get('sale_id'),
@@ -102,6 +107,20 @@ class OrderQueueManager(BaseQueue):
                 "priority": priority,
                 "queue_size": self.priority_queue.qsize()
             })
+
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            increment_counter("orders_accepted_total", labels={"mode": "queued"})
+            observe_latency("order_processing_latency_ms", duration_ms, labels={"mode": "queued"})
+            record_event(
+                "order_queued",
+                {
+                    "queue_id": queue_item.queueID,
+                    "sale_id": queue_item.saleID,
+                    "user_id": queue_item.userID,
+                    "priority": priority,
+                    "queue": "performance_queue",
+                },
+            )
             
             return True, f"Order queued with priority {priority}"
             

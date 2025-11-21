@@ -22,5 +22,5 @@ RUN chmod +x docker/entrypoint.sh
 EXPOSE 5000
 
 ENTRYPOINT ["docker/entrypoint.sh"]
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "src.main:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:5000 --workers ${GUNICORN_WORKERS:-4} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-90} src.main:app"]
 

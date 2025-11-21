@@ -67,6 +67,7 @@ class User(Base):
     _passwordHash = Column('passwordHash', String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     _created_at = Column('created_at', DateTime, default=lambda: datetime.now(timezone.utc))
+    role = Column(String(50), default='customer', nullable=False)
     sales = relationship("Sale", back_populates="user")
     return_requests = relationship("ReturnRequest", back_populates="customer")
     
@@ -81,6 +82,10 @@ class User(Base):
     @property
     def created_at(self):
         return self._created_at
+
+    @property
+    def is_admin(self) -> bool:
+        return (self.role or '').lower() == 'admin'
 
 class Product(Base):
     __tablename__ = 'Product'
@@ -358,6 +363,7 @@ class ReturnRequest(Base):
     shipment = relationship("ReturnShipment", uselist=False, back_populates="return_request", cascade="all, delete-orphan")
     inspection = relationship("Inspection", uselist=False, back_populates="return_request", cascade="all, delete-orphan")
     refund = relationship("Refund", uselist=False, back_populates="return_request", cascade="all, delete-orphan")
+    photos = relationship("ReturnPhoto", back_populates="return_request", cascade="all, delete-orphan")
 
     _VALID_TRANSITIONS = {
         ReturnRequestStatus.PENDING_CUSTOMER_INFO: {ReturnRequestStatus.PENDING_AUTHORIZATION, ReturnRequestStatus.CANCELLED},
@@ -426,6 +432,17 @@ class ReturnShipment(Base):
     notes = Column(Text)
 
     return_request = relationship("ReturnRequest", back_populates="shipment")
+
+
+class ReturnPhoto(Base):
+    __tablename__ = 'ReturnPhoto'
+
+    photoID = Column(Integer, primary_key=True, autoincrement=True)
+    returnRequestID = Column(Integer, ForeignKey('ReturnRequest.returnRequestID', ondelete="CASCADE"), nullable=False)
+    file_path = Column(String(512), nullable=False)
+    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    return_request = relationship("ReturnRequest", back_populates="photos")
 
 
 class Inspection(Base):

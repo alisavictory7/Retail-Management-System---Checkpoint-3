@@ -18,6 +18,8 @@ from src.models import (
     RefundMethod,
     Sale,
     SaleItem,
+    Payment,
+    ReturnPhoto,
 )
 from src.services.inventory_service import InventoryService
 from src.services.refund_service import RefundService
@@ -41,6 +43,7 @@ class ReturnsService:
         self.refund_service = refund_service or RefundService(
             db_session,
             inventory_service=self.inventory_service,
+            config=config,
         )
 
     # ------------------------------------------------------------------
@@ -53,7 +56,7 @@ class ReturnsService:
         items: Iterable[Dict[str, int]],
         reason: ReturnReason | str,
         details: Optional[str] = None,
-        photos_url: Optional[str] = None,
+        photos: Optional[List[str]] = None,
     ) -> Tuple[bool, str, Optional[ReturnRequest]]:
         if not self.config.FEATURE_RETURNS_ENABLED:
             return False, "Returns feature is disabled", None
@@ -65,7 +68,8 @@ class ReturnsService:
         if not self._is_within_policy_window(sale):
             return False, "Return window has expired for this sale", None
 
-        if photos_url is None and self.config.RETURNS_REQUIRE_PHOTOS:
+        sanitized_photos = self._sanitize_photos(photos)
+        if not sanitized_photos and self.config.RETURNS_REQUIRE_PHOTOS:
             return False, "Photos are required for this type of return", None
 
         reason_enum = (
@@ -76,6 +80,8 @@ class ReturnsService:
         if not return_items_result[0]:
             return False, return_items_result[1], None
         return_items = return_items_result[2]
+        if not return_items:
+            return False, "No sale items remain eligible for return", None
 
         request = ReturnRequest(
             saleID=sale.saleID,
@@ -83,7 +89,7 @@ class ReturnsService:
             status=ReturnRequestStatus.PENDING_AUTHORIZATION,
             reason=reason_enum,
             details=details,
-            photos_url=photos_url,
+            photos_url=sanitized_photos[0] if sanitized_photos else None,
             created_at=datetime.now(timezone.utc),
         )
         self.db.add(request)
@@ -92,6 +98,14 @@ class ReturnsService:
         for return_item in return_items:
             return_item.returnRequestID = request.returnRequestID
             self.db.add(return_item)
+
+        for photo_path in sanitized_photos:
+            self.db.add(
+                ReturnPhoto(
+                    returnRequestID=request.returnRequestID,
+                    file_path=photo_path,
+                )
+            )
 
         self.db.commit()
         increment_counter("returns_created_total")
@@ -105,6 +119,22 @@ class ReturnsService:
             extra={"sale_id": sale.saleID, "customer_id": customer_id},
         )
         return True, "Return request submitted", request
+
+    def _sanitize_photos(self, photos: Optional[List[str]]) -> List[str]:
+        if not photos:
+            return []
+        max_photos = getattr(self.config, "RETURNS_MAX_PHOTOS", 20)
+        cleaned: List[str] = []
+        for candidate in photos:
+            if not isinstance(candidate, str):
+                continue
+            trimmed = candidate.strip()
+            if not trimmed:
+                continue
+            cleaned.append(trimmed)
+            if len(cleaned) >= max_photos:
+                break
+        return cleaned
 
     # ------------------------------------------------------------------
     # Admin / internal flows
@@ -239,6 +269,8 @@ class ReturnsService:
                 Sale.saleID == sale_id,
                 Sale.userID == customer_id,
                 Sale._status == 'completed',
+                Sale.payments.any(Payment._status == 'completed'),
+                Sale.items.any(SaleItem.quantity > 0),
             )
             .first()
         )

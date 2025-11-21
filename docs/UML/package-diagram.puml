@@ -1,255 +1,102 @@
-@startuml Package Module Diagram - Implementation Structure
+@startuml Package Diagram - CP3 Simplified View
 
 !theme plain
 skinparam packageStyle rectangle
-skinparam componentStyle rectangle
-
-' Optimized for 4096px limit
-skinparam dpi 72
-skinparam scale 0.3
-skinparam packageFontSize 8
-skinparam packageFontStyle normal
-skinparam packageBackgroundColor #F3E5F5
-skinparam packageBorderColor #7B1FA2
-skinparam packageBorderThickness 1
-skinparam componentFontSize 7
-skinparam componentFontStyle normal
-skinparam componentBackgroundColor #E3F2FD
-skinparam componentBorderColor #1976D2
-skinparam componentBorderThickness 1
+skinparam dpi 120
+skinparam packageBackgroundColor #F4ECFE
+skinparam packageBorderColor #6C3FA7
 skinparam noteBackgroundColor #FFF3CD
 skinparam noteBorderColor #856404
-skinparam noteBorderThickness 1
-skinparam arrowColor #333333
-skinparam arrowThickness 1
 
-package "Retail Management System" {
-    
-    package "src" {
-        package "core" {
-            [main.py] as Main
-            [models.py] as Models
-            [database.py] as Database
-        }
-        
-        package "services" {
-            [flash_sale_service.py] as FlashSaleService
-            [partner_catalog_service.py] as PartnerCatalogService
-        }
-        
-        package "tactics" {
-            package "base" {
-                [base.py] as Base
-            }
-            
-            package "availability" {
-                [availability.py] as Availability
-            }
-            
-            package "security" {
-                [security.py] as Security
-            }
-            
-            package "performance" {
-                [performance.py] as Performance
-            }
-            
-            package "modifiability" {
-                [modifiability.py] as Modifiability
-            }
-            
-            package "integrability" {
-                [integrability.py] as Integrability
-            }
-            
-            package "testability" {
-                [testability.py] as Testability
-            }
-            
-            package "usability" {
-                [usability.py] as Usability
-            }
-            
-            [manager.py] as Manager
-        }
-    }
-    
-    package "tests" {
-        package "quality_tactics" {
-            [test_availability_tactics.py] as TestAvailability
-            [test_security_tactics.py] as TestSecurity
-            [test_performance_tactics.py] as TestPerformance
-            [test_modifiability_tactics.py] as TestModifiability
-            [test_integrability_tactics.py] as TestIntegrability
-            [test_testability_tactics.py] as TestTestability
-            [test_usability_tactics.py] as TestUsability
-        }
-        
-        package "integration" {
-            [test_integration.py] as TestIntegration
-            [test_comprehensive_demo.py] as TestComprehensive
-            [test_logic.py] as TestLogic
-        }
-        
-        [conftest.py] as Conftest
-        [run_all_tests.py] as RunAllTests
-    }
-    
-    package "docs" {
-        package "UML" {
-            [PlantUML diagrams] as UMLDiagrams
-        }
-        
-        package "ADR" {
-            [ADR documents] as ADRs
-        }
-    }
-    
-    [comprehensive_quality_scenarios_test.py] as ComprehensiveTest
-    [run_tests.py] as RunTests
-    [run.py] as RunPy
-    [requirements.txt] as Requirements
+left to right direction
+
+package "Core Platform" {
+    [src/config.py] as Config
+    [src/main.py] as Main
+    [src/models.py] as Models
+    [src/database.py] as Database
 }
 
-package "External Dependencies" {
-    package "Flask Framework" {
-        [Flask] as FlaskCore
-        [Jinja2] as Jinja2
-        [Werkzeug] as Werkzeug
-    }
-    
-    package "Database" {
-        [SQLAlchemy] as SQLAlchemy
-        [PostgreSQL] as PostgreSQL
-        [psycopg2] as Psycopg2
-    }
-    
-    package "Quality Tactics Libraries" {
-        [tenacity] as Tenacity
-        [redis] as Redis
-        [prometheus-client] as Prometheus
-        [dependency-injector] as DependencyInjector
-        [bleach] as Bleach
-        [jsonschema] as JSONSchema
-    }
-    
-    package "Testing" {
-        [pytest] as Pytest
-        [unittest.mock] as Mock
-    }
+package "Experience Layer" {
+    [src/blueprints/returns.py] as ReturnsBP
+    [templates/] as Templates
 }
 
-' Core dependencies
-Main --> Models : uses
-Main --> Database : uses
-Main --> Manager : uses
-Main --> FlashSaleService : uses
-Main --> PartnerCatalogService : uses
+package "Domain Services" {
+    [src/services/returns_service.py] as ReturnsSvc
+    [src/services/refund_service.py] as RefundSvc
+    [src/services/payment_service.py] as PaymentSvc
+    [src/services/inventory_service.py] as InventorySvc
+}
 
-Models --> Database : extends
-Database --> PostgreSQL : connects to
+package "Reliability & Observability" {
+    [src/tactics/manager.py] as TacticsManager
+    [src/tactics/availability.py] as Availability
+    [src/tactics/performance.py] as Performance
+    [src/observability/metrics.py] as Metrics
+    [src/observability/business_metrics.py] as BusinessMetrics
+}
 
-' Quality tactics dependencies
-Manager --> Base : extends
-Manager --> Availability : uses
-Manager --> Security : uses
-Manager --> Performance : uses
-Manager --> Modifiability : uses
-Manager --> Integrability : uses
-Manager --> Testability : uses
-Manager --> Usability : uses
+package "Deployment & Tooling" as Deploy {
+    [Dockerfile]
+    [deploy/dockercompose.yml]
+    [docker/entrypoint.sh]
+    [scripts/bootstrap_super_admin.py]
+}
 
-Availability --> Base : extends
-Security --> Base : extends
-Performance --> Base : extends
-Modifiability --> Base : extends
-Integrability --> Base : extends
-Testability --> Base : extends
-Usability --> Base : extends
+package "Tests" as TestsPkg {
+    [tests/test_returns_service.py]
+    [tests/test_returns_api.py]
+    [tests/test_business_metrics.py]
+    [tests/test_quality_scenario_validation.py]
+}
 
-' Service dependencies
-FlashSaleService --> Models : uses
-PartnerCatalogService --> Models : uses
+package "Docs" as DocsPkg {
+    [docs/ADR/ADR_CP3.md]
+    [docs/UML/*.puml]
+    [Checkpoint3.md]
+    [docs/Runbook.md]
+}
 
-' Test dependencies
-TestAvailability --> Availability : tests
-TestSecurity --> Security : tests
-TestPerformance --> Performance : tests
-TestModifiability --> Modifiability : tests
-TestIntegrability --> Integrability : tests
-TestTestability --> Testability : tests
-TestUsability --> Usability : tests
+Main --> ReturnsBP
+ReturnsBP --> ReturnsSvc
+ReturnsBP --> Templates
 
-TestIntegration --> Main : tests
-TestComprehensive --> Manager : tests
-TestLogic --> Models : tests
+ReturnsSvc --> RefundSvc
+ReturnsSvc --> InventorySvc
+RefundSvc --> PaymentSvc
+ReturnsSvc --> Models
+InventorySvc --> Models
 
-Conftest --> Models : fixtures
-RunAllTests --> TestAvailability : runs
-RunAllTests --> TestSecurity : runs
-RunAllTests --> TestPerformance : runs
-RunAllTests --> TestModifiability : runs
-RunAllTests --> TestIntegrability : runs
-RunAllTests --> TestTestability : runs
-RunAllTests --> TestUsability : runs
+TacticsManager --> Availability
+TacticsManager --> Performance
+Main --> TacticsManager
+TacticsManager --> Metrics
+BusinessMetrics --> Metrics
+BusinessMetrics --> Models
 
-ComprehensiveTest --> Manager : validates
-ComprehensiveTest --> Models : uses
+Deploy --> Main : containerizes
+Deploy --> Database : seeds
 
-' External library dependencies
-Main --> FlaskCore : uses
-Main --> Jinja2 : uses
-Main --> Werkzeug : uses
+TestsPkg --> ReturnsSvc
+TestsPkg --> ReturnsBP
+TestsPkg --> BusinessMetrics
+TestsPkg --> TacticsManager
 
-Models --> SQLAlchemy : uses
-Database --> Psycopg2 : uses
+DocsPkg --> Deploy : instructions
+DocsPkg --> BusinessMetrics : diagrams & runbook
 
-Availability --> Tenacity : uses
-Performance --> Redis : uses
-Performance --> Prometheus : uses
-Testability --> DependencyInjector : uses
-Security --> Bleach : uses
-Modifiability --> JSONSchema : uses
-
-TestAvailability --> Pytest : uses
-TestSecurity --> Pytest : uses
-TestPerformance --> Pytest : uses
-TestModifiability --> Pytest : uses
-TestIntegrability --> Pytest : uses
-TestTestability --> Pytest : uses
-TestUsability --> Pytest : uses
-TestIntegration --> Pytest : uses
-TestComprehensive --> Pytest : uses
-TestLogic --> Pytest : uses
-
-Conftest --> Mock : uses
-TestAvailability --> Mock : uses
-TestSecurity --> Mock : uses
-TestPerformance --> Mock : uses
-TestModifiability --> Mock : uses
-TestIntegrability --> Mock : uses
-TestTestability --> Mock : uses
-TestUsability --> Mock : uses
-
-note right of Manager
-  Quality Tactics Manager
-  - Central coordinator
-  - Implements 14+ tactics
-  - Provides unified interface
+note right of ReturnsSvc
+  RMA workflow engine
+  - Validates requests
+  - Drives shipment, inspection, refund states
 end note
 
-note right of Base
-  Base Tactic Classes
-  - Abstract base classes
-  - Common interfaces
-  - Shared functionality
-end note
-
-note right of ComprehensiveTest
-  Quality Scenario Validation
-  - Tests all 15 scenarios
-  - Validates 100% compliance
-  - Standalone validation
+note right of BusinessMetrics
+  Dashboard KPIs
+  - Quarter windows
+  - RMA rate & cycle time
+  - Uses Config.DEFAULT_TIMEZONE
 end note
 
 @enduml

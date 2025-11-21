@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.config import Config
 from src.models import (
     User,
     Product,
@@ -26,6 +27,8 @@ class _StubConfig:
     MAX_RETURN_ITEM_QUANTITY = 5
     RETURNS_REQUIRE_PHOTOS = False
     FEATURE_RETURNS_ENABLED = True
+    RETURNS_MAX_PHOTOS = 20
+    PAYMENT_REFUND_FAILURE_PROBABILITY = 0.0
 
 
 class _StubPaymentService:
@@ -98,6 +101,7 @@ def _build_returns_service(db_session, *, payment_should_fail: bool = False) -> 
         db_session,
         payment_service=payment_service,
         inventory_service=inventory_service,
+        config=_StubConfig,
     )
     return ReturnsService(
         db_session,
@@ -218,5 +222,128 @@ def test_return_request_quantity_cannot_exceed_purchased(db_session):
         reason=ReturnReason.DAMAGED,
     )
     assert not success2
-    assert "remain eligible" in message2
+    assert "already have return requests" in message2
+
+
+def _create_approved_return_request(db_session):
+    _, _, sale, sale_item, _ = _create_completed_sale(db_session)
+    service = _build_returns_service(db_session)
+    success, _, request = service.create_return_request(
+        sale_id=sale.saleID,
+        customer_id=sale.userID,
+        items=[{"sale_item_id": sale_item.saleItemID, "quantity": 1}],
+        reason=ReturnReason.DAMAGED,
+    )
+    assert success
+    service.authorize_return(request.returnRequestID, approve=True)
+    service.record_shipment(request.returnRequestID, carrier="DHL", tracking_number="TRACK")
+    service.mark_received(request.returnRequestID)
+    service.record_inspection(
+        request.returnRequestID,
+        inspected_by="QA Team",
+        result=InspectionResult.APPROVED,
+    )
+    return request.returnRequestID, service
+
+
+def test_manual_refund_methods_complete_without_gateway(db_session):
+    return_id, service = _create_approved_return_request(db_session)
+    success, message = service.initiate_refund(return_id, method="STORE_CREDIT")
+    assert success, message
+
+
+def test_original_method_aliases_to_payment_channel(db_session):
+    original_probability = Config.PAYMENT_REFUND_FAILURE_PROBABILITY
+    Config.PAYMENT_REFUND_FAILURE_PROBABILITY = 0.0
+    try:
+        return_id, service = _create_approved_return_request(db_session)
+        success, message = service.initiate_refund(return_id, method="ORIGINAL_METHOD")
+        assert success, message
+    finally:
+        Config.PAYMENT_REFUND_FAILURE_PROBABILITY = original_probability
+
+
+def test_create_return_request_stores_uploaded_photos(db_session):
+    _, _, sale, sale_item, _ = _create_completed_sale(db_session)
+    service = _build_returns_service(db_session)
+    photos = [f"uploads/returns/test_photo_{i}.jpg" for i in range(3)]
+
+    success, _, request = service.create_return_request(
+        sale_id=sale.saleID,
+        customer_id=sale.userID,
+        items=[{"sale_item_id": sale_item.saleItemID, "quantity": 1}],
+        reason=ReturnReason.DAMAGED,
+        photos=photos,
+    )
+    assert success
+    db_session.refresh(request)
+    assert len(request.photos) == 3
+    assert request.photos[0].file_path == photos[0]
+
+
+def test_photos_are_limited_to_configured_max(db_session):
+    _, _, sale, sale_item, _ = _create_completed_sale(db_session)
+    original_max = _StubConfig.RETURNS_MAX_PHOTOS
+    _StubConfig.RETURNS_MAX_PHOTOS = 5
+    service = _build_returns_service(db_session)
+    photos = [f"https://example.com/photo-{i}.jpg" for i in range(10)]
+    try:
+        success, _, request = service.create_return_request(
+            sale_id=sale.saleID,
+            customer_id=sale.userID,
+            items=[{"sale_item_id": sale_item.saleItemID, "quantity": 1}],
+            reason=ReturnReason.DAMAGED,
+            photos=photos,
+        )
+        assert success
+        db_session.refresh(request)
+        assert len(request.photos) == 5
+    finally:
+        _StubConfig.RETURNS_MAX_PHOTOS = original_max
+
+
+def test_failed_sales_are_not_eligible(db_session):
+    _, _, sale, sale_item, payment = _create_completed_sale(db_session)
+    # Simulate a failure by marking the payment as failed and removing any successful ones
+    payment.status = "failed"
+    db_session.commit()
+    service = _build_returns_service(db_session)
+
+    success, message, _ = service.create_return_request(
+        sale_id=sale.saleID,
+        customer_id=sale.userID,
+        items=[{"sale_item_id": sale_item.saleItemID, "quantity": 1}],
+        reason=ReturnReason.DAMAGED,
+    )
+
+    assert not success
+    assert "not eligible" in message.lower()
+
+
+def test_manual_refund_blocked_when_failure_mode(db_session):
+    original_probability = _StubConfig.PAYMENT_REFUND_FAILURE_PROBABILITY
+    _StubConfig.PAYMENT_REFUND_FAILURE_PROBABILITY = 1.0
+    try:
+        return_id, service = _create_approved_return_request(db_session)
+        success, message = service.initiate_refund(return_id, method="STORE_CREDIT")
+        assert not success
+        assert "manual refund methods" in message.lower()
+    finally:
+        _StubConfig.PAYMENT_REFUND_FAILURE_PROBABILITY = original_probability
+
+
+def test_sales_without_positive_quantities_are_filtered(db_session):
+    _, _, sale, sale_item, _ = _create_completed_sale(db_session)
+    sale_item.quantity = 0
+    db_session.commit()
+
+    service = _build_returns_service(db_session)
+    success, message, _ = service.create_return_request(
+        sale_id=sale.saleID,
+        customer_id=sale.userID,
+        items=[{"sale_item_id": sale_item.saleItemID, "quantity": 1}],
+        reason=ReturnReason.DAMAGED,
+    )
+    assert not success
+    assert "cannot return more units than were purchased" in message.lower()
 

@@ -61,7 +61,7 @@
 **Deployment decisions (planned):**
 - All containers orchestrated via `docker-compose` in a local network.
 - App exposes HTTP port 5000 on the host.
-- Logs emitted to stdout in structured format for easy collection via `docker compose logs`.
+- Logs emitted to stdout in structured format for easy collection via `docker compose -f deploy/dockercompose.yml logs`.
 
 
 

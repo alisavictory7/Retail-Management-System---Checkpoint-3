@@ -8,11 +8,12 @@ for Checkpoint 2 quality attributes.
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 import logging
+import time
 from sqlalchemy.orm import Session
 
 # Import all tactic managers
 from .availability import (
-    PaymentServiceCircuitBreaker, GracefulDegradationTactic, 
+    PaymentServiceCircuitBreaker, GracefulDegradationTactic,
     RollbackTactic, PaymentRetryTactic, RemovalFromServiceTactic
 )
 from .security import SecurityManager
@@ -21,6 +22,7 @@ from .performance import ThrottlingManager, OrderQueueManager, ConcurrencyManage
 from .integrability import IntegrabilityManager
 from .testability import TestabilityManager
 from .usability import UsabilityManager
+from src.observability import increment_counter, observe_latency, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +236,7 @@ class QualityTacticsManager:
         operation_id = f"flash_sale_{order_data.get('sale_id')}_{int(datetime.now().timestamp())}"
         
         try:
+            order_start = time.perf_counter()
             # Start progress tracking
             self.start_progress_tracking(operation_id, "flash_sale_processing", 30)
             
@@ -243,6 +246,7 @@ class QualityTacticsManager:
                 return False, {"error": "Request throttled", "message": throttle_msg}
             
             self.update_progress(operation_id, 20, "Throttling check passed")
+            increment_counter("orders_submitted_total", labels={"source": "flash_sale"})
             
             # Check feature toggle
             feature_enabled, feature_msg = self.is_feature_enabled("flash_sale_enabled", user_id)
@@ -266,6 +270,18 @@ class QualityTacticsManager:
             
             # Complete operation
             self.complete_operation(operation_id, True)
+            duration_ms = (time.perf_counter() - order_start) * 1000
+            increment_counter("orders_accepted_total", labels={"mode": "completed"})
+            observe_latency("order_processing_latency_ms", duration_ms, labels={"mode": "completed"})
+            record_event(
+                "order_completed",
+                {
+                    "operation_id": operation_id,
+                    "sale_id": order_data.get("sale_id"),
+                    "user_id": user_id,
+                    "latency_ms": duration_ms,
+                },
+            )
             
             return True, {
                 "status": "success",

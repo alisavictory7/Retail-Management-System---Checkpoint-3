@@ -10,8 +10,20 @@ import logging
 import time
 from sqlalchemy.orm import Session
 
-from .base import BaseCircuitBreaker, BaseRetry, BaseTactic, TacticState
-from ..models import CircuitBreakerState, OrderQueue, AuditLog, SystemMetrics
+from .base import (
+    BaseCircuitBreaker,
+    BaseRetry,
+    BaseTactic,
+    TacticState,
+    CircuitBreakerState as BreakerState,
+)
+from ..models import (
+    CircuitBreakerState as CircuitBreakerStateModel,
+    OrderQueue,
+    AuditLog,
+    SystemMetrics,
+)
+from src.observability import increment_counter, observe_latency, record_event
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +35,7 @@ class PaymentServiceCircuitBreaker(BaseCircuitBreaker):
         self.db = db_session
         self.failure_threshold = self.config.get('failure_threshold', 5)
         self.timeout_duration = self.config.get('timeout_duration', 60)
+        self.outage_started_at = None
         
         # Debug: Check if database session is valid
         if self.db is None:
@@ -63,7 +76,7 @@ class PaymentServiceCircuitBreaker(BaseCircuitBreaker):
                 self.logger.warning("Database session is invalid (no query method)")
                 return
                 
-            breaker = self.db.query(CircuitBreakerState).filter_by(
+            breaker = self.db.query(CircuitBreakerStateModel).filter_by(
                 service_name=self.service_name
             ).first()
             
@@ -74,7 +87,7 @@ class PaymentServiceCircuitBreaker(BaseCircuitBreaker):
                 breaker.next_attempt_time = self.next_attempt_time
                 breaker.updated_at = datetime.now(timezone.utc)
             else:
-                breaker = CircuitBreakerState(
+                breaker = CircuitBreakerStateModel(
                     service_name=self.service_name,
                     state=self.state.value,
                     failure_count=self.failure_count,
@@ -101,6 +114,49 @@ class PaymentServiceCircuitBreaker(BaseCircuitBreaker):
             "error": str(error)
         })
 
+    def record_success(self):
+        prev_state = self.state
+        super().record_success()
+        if self.outage_started_at:
+            recovery_time = datetime.now(timezone.utc)
+            mttr_seconds = (recovery_time - self.outage_started_at).total_seconds()
+            if mttr_seconds >= 0:
+                observe_latency("payment_circuit_mttr_seconds", mttr_seconds)
+                increment_counter("payment_circuit_recoveries_total")
+                record_event(
+                    "payment_service_recovered",
+                    {
+                        "service": self.service_name,
+                        "mttr_seconds": mttr_seconds,
+                    },
+                )
+            self.outage_started_at = None
+        if prev_state != self.state:
+            record_event(
+                "payment_circuit_state_change",
+                {"service": self.service_name, "state": self.state.value},
+            )
+
+    def record_failure(self):
+        prev_state = self.state
+        super().record_failure()
+        if self.state == BreakerState.OPEN and self.outage_started_at is None:
+            self.outage_started_at = self.last_failure_time or datetime.now(timezone.utc)
+            record_event(
+                "payment_circuit_opened",
+                {
+                    "service": self.service_name,
+                    "failure_count": self.failure_count,
+                    "timeout_seconds": self.timeout_duration,
+                },
+            )
+            increment_counter("payment_circuit_open_events_total")
+        if prev_state != self.state:
+            record_event(
+                "payment_circuit_state_change",
+                {"service": self.service_name, "state": self.state.value},
+            )
+
 class GracefulDegradationTactic(BaseTactic):
     """Graceful degradation for order processing during failures"""
     
@@ -112,6 +168,7 @@ class GracefulDegradationTactic(BaseTactic):
     def execute(self, order_data: Dict[str, Any], user_id: int) -> Tuple[bool, str]:
         """Execute graceful degradation by queuing orders"""
         try:
+            start_time = time.perf_counter()
             # Create order queue entry
             queue_item = OrderQueue(
                 saleID=order_data.get('sale_id'),
@@ -130,6 +187,18 @@ class GracefulDegradationTactic(BaseTactic):
                 "user_id": str(user_id),
                 "queue_type": "payment_retry"
             })
+
+            increment_counter("orders_accepted_total", labels={"mode": "queued"})
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            observe_latency("order_processing_latency_ms", duration_ms, labels={"mode": "queued"})
+            record_event(
+                "order_queued_for_retry",
+                {
+                    "queue_id": queue_item.queueID,
+                    "sale_id": queue_item.saleID,
+                    "user_id": user_id,
+                },
+            )
             
             self._log_audit("order_queued", "Order", queue_item.queueID, 
                           user_id, "Order queued for retry processing")

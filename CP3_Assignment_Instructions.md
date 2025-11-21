@@ -38,8 +38,8 @@ This feature extends the original Register Sale / Purchase use case by allowing 
 
 A. Containerization
 
-- Create docker-compose.yml for app + database (+ optional queue/worker).
-- One-command startup: docker compose up.
+- Create `/deploy/dockercompose.yml` for app + database (+ optional queue/worker).
+- One-command startup: `docker compose -f deploy/dockercompose.yml up`.
 B. Observability
 - Add structured logging (request ID, timestamp, error level).
 - Expose basic metrics (orders/day, error rate, refund/day, etc.).

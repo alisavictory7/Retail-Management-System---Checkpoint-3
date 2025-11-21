@@ -17,6 +17,7 @@ from src.models import (
 from src.services.payment_service import PaymentService
 from src.services.inventory_service import InventoryService
 from src.observability import increment_counter, record_event
+from src.config import Config
 
 
 class RefundService:
@@ -27,11 +28,13 @@ class RefundService:
         db_session: Session,
         payment_service: Optional[PaymentService] = None,
         inventory_service: Optional[InventoryService] = None,
+        config: type[Config] = Config,
     ) -> None:
         self.db = db_session
         self.logger = logging.getLogger(__name__)
         self.payment_service = payment_service or PaymentService(db_session)
         self.inventory_service = inventory_service or InventoryService(db_session)
+        self.config = config
 
     def process_refund(
         self,
@@ -73,7 +76,19 @@ class RefundService:
         if refund_amount <= 0:
             return False, "Calculated refund amount is zero; nothing to refund", None
 
-        refund_method = self._determine_refund_method(method, payment)
+        refund_method = self._resolve_refund_method(method, payment)
+        use_gateway = refund_method == RefundMethod.CARD
+
+        failure_simulation_active = getattr(
+            self.config, "PAYMENT_REFUND_FAILURE_PROBABILITY", 0.0
+        ) >= 1.0
+        if failure_simulation_active and not use_gateway:
+            return (
+                False,
+                "Manual refund methods are disabled while PAYMENT_REFUND_FAILURE_PROBABILITY is 1.0. "
+                "Select Card or Original Method to exercise the failure scenario.",
+                None,
+            )
 
         refund = return_request.refund
         if refund and refund.status == RefundStatus.COMPLETED:
@@ -93,6 +108,29 @@ class RefundService:
             refund.failure_reason = None
 
         self.db.flush()
+
+        if not use_gateway:
+            reference = f"MANUAL-{refund_method.value[:3]}-{refund.returnRequestID:05d}"
+            refund.mark_completed(reference)
+            return_request.status = ReturnRequestStatus.REFUNDED
+            self.inventory_service.apply_return_stock(return_request)
+            self.db.commit()
+            increment_counter("refunds_completed_total")
+            record_event(
+                "refund_completed",
+                {
+                    "return_request_id": return_request.returnRequestID,
+                    "refund_id": refund.refundID,
+                    "method": refund_method.value,
+                    "amount": float(refund.amount),
+                },
+            )
+            self.logger.info(
+                "Manual refund recorded for return request %s",
+                return_request.returnRequestID,
+                extra={"refund_id": refund.refundID, "amount": refund_amount, "method": refund_method.value},
+            )
+            return True, "Manual refund recorded", refund
 
         success, message, reference = self.payment_service.refund(payment, refund_amount)
         if success:
@@ -133,18 +171,20 @@ class RefundService:
         )
         return False, message, refund
 
-    @staticmethod
-    def _determine_refund_method(
+    def _resolve_refund_method(
+        self,
         requested_method: Optional[RefundMethod | str],
         payment: Payment,
     ) -> RefundMethod:
         if requested_method:
-            return (
-                requested_method
-                if isinstance(requested_method, RefundMethod)
-                else RefundMethod(requested_method)
-            )
+            method = requested_method if isinstance(requested_method, RefundMethod) else RefundMethod(requested_method)
+            if method == RefundMethod.ORIGINAL_METHOD:
+                return self._map_original_method(payment)
+            return method
+        return self._map_original_method(payment)
 
+    @staticmethod
+    def _map_original_method(payment: Payment) -> RefundMethod:
         payment_type = (payment.payment_type or payment.type or "").lower()
         if payment_type == "card":
             return RefundMethod.CARD
